@@ -42,6 +42,30 @@ type PlayerLookupResult = {
   puzzleRating: number | null;
   homeworkCompletionPct: number;
   lastActiveLabel: string;
+  debug?: {
+    lichess: {
+      profileStatus: number | null;
+      profileOk: boolean;
+      games24hRapidStatus: number | null;
+      games7dRapidStatus: number | null;
+      games24hBlitzStatus: number | null;
+      games7dBlitzStatus: number | null;
+      errors: string[];
+    };
+    chesscom: {
+      profileStatus: number | null;
+      profileOk: boolean;
+      statsStatus: number | null;
+      archivesStatus: number | null;
+      archiveFetchStatuses: number[];
+      errors: string[];
+    };
+    timingsMs: {
+      lichessTotal: number;
+      chesscomTotal: number;
+      total: number;
+    };
+  };
 };
 
 async function fetchWithTimeout(
@@ -65,7 +89,10 @@ async function fetchWithTimeout(
   }
 }
 
-async function fetchLichessUser(username: string): Promise<LichessUser | null> {
+async function fetchLichessUser(
+  username: string,
+  debug: { errors: string[] }
+): Promise<{ user: LichessUser | null; status: number | null }> {
   try {
     const response = await fetchWithTimeout(
       `https://lichess.org/api/user/${username}`,
@@ -74,20 +101,26 @@ async function fetchLichessUser(username: string): Promise<LichessUser | null> {
       }
     );
     if (response.ok) {
-      return await response.json();
+      const user = await response.json();
+      return { user, status: response.status };
+    } else {
+      debug.errors.push(`Profile fetch failed: ${response.status} ${response.statusText}`);
+      return { user: null, status: response.status };
     }
   } catch (error) {
-    // Treat as not found
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    debug.errors.push(`Profile fetch error: ${errorMsg}`);
+    return { user: null, status: null };
   }
-  return null;
 }
 
 async function countLichessGames(
   username: string,
   perfType: "rapid" | "blitz",
   sinceMs: number,
-  max: number
-): Promise<number> {
+  max: number,
+  debug: { errors: string[] }
+): Promise<{ count: number; status: number | null }> {
   try {
     const response = await fetchWithTimeout(
       `https://lichess.org/api/games/user/${username}?since=${sinceMs}&max=${max}&perfType=${perfType}&moves=false&clocks=false&evals=false&opening=false&pgnInJson=false`,
@@ -97,17 +130,23 @@ async function countLichessGames(
     );
     if (response.ok) {
       const text = await response.text();
-      // Count non-empty lines (NDJSON format)
-      const lines = text.trim().split("\n").filter((line) => line.trim());
-      return lines.length;
+      const count = text.split("\n").filter((line) => line.trim().length > 0).length;
+      return { count, status: response.status };
+    } else {
+      debug.errors.push(`Games ${perfType} since=${sinceMs} failed: ${response.status} ${response.statusText}`);
+      return { count: 0, status: response.status };
     }
   } catch (error) {
-    // Treat as 0
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    debug.errors.push(`Games ${perfType} since=${sinceMs} error: ${errorMsg}`);
+    return { count: 0, status: null };
   }
-  return 0;
 }
 
-async function fetchChessComProfile(username: string): Promise<boolean> {
+async function fetchChessComProfile(
+  username: string,
+  debug: { errors: string[] }
+): Promise<{ found: boolean; status: number | null }> {
   try {
     const response = await fetchWithTimeout(
       `https://api.chess.com/pub/player/${username}`,
@@ -115,15 +154,21 @@ async function fetchChessComProfile(username: string): Promise<boolean> {
         headers: { Accept: "application/json" },
       }
     );
-    return response.ok;
+    if (!response.ok) {
+      debug.errors.push(`Profile fetch failed: ${response.status} ${response.statusText}`);
+    }
+    return { found: response.ok, status: response.status };
   } catch (error) {
-    return false;
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    debug.errors.push(`Profile fetch error: ${errorMsg}`);
+    return { found: false, status: null };
   }
 }
 
 async function fetchChessComStats(
-  username: string
-): Promise<ChessComStats | null> {
+  username: string,
+  debug: { errors: string[] }
+): Promise<{ stats: ChessComStats | null; status: number | null }> {
   try {
     const response = await fetchWithTimeout(
       `https://api.chess.com/pub/player/${username}/stats`,
@@ -132,19 +177,25 @@ async function fetchChessComStats(
       }
     );
     if (response.ok) {
-      return await response.json();
+      const stats = await response.json();
+      return { stats, status: response.status };
+    } else {
+      debug.errors.push(`Stats fetch failed: ${response.status} ${response.statusText}`);
+      return { stats: null, status: response.status };
     }
   } catch (error) {
-    // Treat as not found
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    debug.errors.push(`Stats fetch error: ${errorMsg}`);
+    return { stats: null, status: null };
   }
-  return null;
 }
 
 async function countChessComGames(
   username: string,
   timeClass: "rapid" | "blitz",
   since24h: number,
-  since7d: number
+  since7d: number,
+  debug: { errors: string[]; archiveFetchStatuses: number[] }
 ): Promise<{ games24h: number; games7d: number }> {
   let games24h = 0;
   let games7d = 0;
@@ -159,6 +210,7 @@ async function countChessComGames(
     );
 
     if (!archivesResponse.ok) {
+      debug.errors.push(`Archives list fetch failed: ${archivesResponse.status} ${archivesResponse.statusText}`);
       return { games24h: 0, games7d: 0 };
     }
 
@@ -173,16 +225,14 @@ async function countChessComGames(
         const archiveResponse = await fetchWithTimeout(archiveUrl, {
           headers: { Accept: "application/json" },
         });
+        debug.archiveFetchStatuses.push(archiveResponse.status);
+        
         if (archiveResponse.ok) {
           const archiveData: ChessComArchive = await archiveResponse.json();
           const games = archiveData.games || [];
 
           for (const game of games) {
-            if (
-              game.time_class === timeClass ||
-              (timeClass === "rapid" && game.time_class === "chess_rapid") ||
-              (timeClass === "blitz" && game.time_class === "chess_blitz")
-            ) {
+            if (game.time_class === timeClass) {
               const endTime = game.end_time;
               if (endTime) {
                 const endTimeMs = endTime * 1000;
@@ -195,13 +245,17 @@ async function countChessComGames(
               }
             }
           }
+        } else {
+          debug.errors.push(`Archive ${archiveUrl} fetch failed: ${archiveResponse.status} ${archiveResponse.statusText}`);
         }
       } catch (error) {
-        // Continue with next archive
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        debug.errors.push(`Archive ${archiveUrl} fetch error: ${errorMsg}`);
       }
     }
   } catch (error) {
-    // Return 0 counts
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    debug.errors.push(`Archives processing error: ${errorMsg}`);
   }
 
   return { games24h, games7d };
@@ -210,6 +264,7 @@ async function countChessComGames(
 export async function GET(request: NextRequest) {
   const searchParams = request.nextUrl.searchParams;
   const username = searchParams.get("username");
+  const debugMode = searchParams.get("debug") === "1";
 
   if (!username || !username.trim()) {
     return NextResponse.json(
@@ -226,8 +281,45 @@ export async function GET(request: NextRequest) {
   const since24h = now - 24 * 60 * 60 * 1000;
   const since7d = now - 7 * 24 * 60 * 60 * 1000;
 
+  const totalStartTime = Date.now();
+  const debug = debugMode
+    ? {
+        lichess: {
+          profileStatus: null as number | null,
+          profileOk: false,
+          games24hRapidStatus: null as number | null,
+          games7dRapidStatus: null as number | null,
+          games24hBlitzStatus: null as number | null,
+          games7dBlitzStatus: null as number | null,
+          errors: [] as string[],
+        },
+        chesscom: {
+          profileStatus: null as number | null,
+          profileOk: false,
+          statsStatus: null as number | null,
+          archivesStatus: null as number | null,
+          archiveFetchStatuses: [] as number[],
+          errors: [] as string[],
+        },
+        timingsMs: {
+          lichessTotal: 0,
+          chesscomTotal: 0,
+          total: 0,
+        },
+      }
+    : null;
+
   // Lichess lookup
-  const lichessUser = await fetchLichessUser(normalizedUsername.toLowerCase());
+  const lichessStartTime = Date.now();
+  const { user: lichessUser, status: lichessProfileStatus } = debug
+    ? await fetchLichessUser(normalizedUsername.toLowerCase(), debug.lichess)
+    : await fetchLichessUser(normalizedUsername.toLowerCase(), { errors: [] });
+  
+  if (debug) {
+    debug.lichess.profileStatus = lichessProfileStatus;
+    debug.lichess.profileOk = lichessUser !== null;
+  }
+
   let lichessHandle: string | null = null;
   let lichessRapidRating: number | null = null;
   let lichessBlitzRating: number | null = null;
@@ -244,34 +336,78 @@ export async function GET(request: NextRequest) {
     lichessPuzzleRating = lichessUser.perfs?.puzzle?.rating ?? null;
 
     // Count games
-    lichessRapid24h = await countLichessGames(
-      lichessHandle,
-      "rapid",
-      since24h,
-      200
-    );
-    lichessRapid7d = await countLichessGames(
-      lichessHandle,
-      "rapid",
-      since7d,
-      400
-    );
-    lichessBlitz24h = await countLichessGames(
-      lichessHandle,
-      "blitz",
-      since24h,
-      200
-    );
-    lichessBlitz7d = await countLichessGames(
-      lichessHandle,
-      "blitz",
-      since7d,
-      400
-    );
+    const rapid24hResult = debug
+      ? await countLichessGames(
+          lichessHandle,
+          "rapid",
+          since24h,
+          200,
+          debug.lichess
+        )
+      : await countLichessGames(lichessHandle, "rapid", since24h, 200, { errors: [] });
+    lichessRapid24h = rapid24hResult.count;
+    if (debug) {
+      debug.lichess.games24hRapidStatus = rapid24hResult.status;
+    }
+
+    const rapid7dResult = debug
+      ? await countLichessGames(
+          lichessHandle,
+          "rapid",
+          since7d,
+          400,
+          debug.lichess
+        )
+      : await countLichessGames(lichessHandle, "rapid", since7d, 400, { errors: [] });
+    lichessRapid7d = rapid7dResult.count;
+    if (debug) {
+      debug.lichess.games7dRapidStatus = rapid7dResult.status;
+    }
+
+    const blitz24hResult = debug
+      ? await countLichessGames(
+          lichessHandle,
+          "blitz",
+          since24h,
+          200,
+          debug.lichess
+        )
+      : await countLichessGames(lichessHandle, "blitz", since24h, 200, { errors: [] });
+    lichessBlitz24h = blitz24hResult.count;
+    if (debug) {
+      debug.lichess.games24hBlitzStatus = blitz24hResult.status;
+    }
+
+    const blitz7dResult = debug
+      ? await countLichessGames(
+          lichessHandle,
+          "blitz",
+          since7d,
+          400,
+          debug.lichess
+        )
+      : await countLichessGames(lichessHandle, "blitz", since7d, 400, { errors: [] });
+    lichessBlitz7d = blitz7dResult.count;
+    if (debug) {
+      debug.lichess.games7dBlitzStatus = blitz7dResult.status;
+    }
+  }
+
+  if (debug) {
+    debug.timingsMs.lichessTotal = Date.now() - lichessStartTime;
   }
 
   // Chess.com lookup
-  const chessComFound = await fetchChessComProfile(normalizedUsername);
+  const chesscomStartTime = Date.now();
+  const { found: chessComFound, status: chessComProfileStatus } = debug
+    ? await fetchChessComProfile(normalizedUsername, debug.chesscom)
+    : await fetchChessComProfile(normalizedUsername, { errors: [] });
+  
+  if (debug) {
+    debug.chesscom.profileStatus = chessComProfileStatus;
+    debug.chesscom.profileOk = chessComFound;
+  }
+
   let chesscomHandle: string | null = null;
   let chesscomRapidRating: number | null = null;
   let chesscomBlitzRating: number | null = null;
@@ -284,7 +420,14 @@ export async function GET(request: NextRequest) {
   if (chessComFound) {
     chesscomHandle = normalizedUsername;
 
-    const chessComStats = await fetchChessComStats(normalizedUsername);
+    const { stats: chessComStats, status: chessComStatsStatus } = debug
+      ? await fetchChessComStats(normalizedUsername, debug.chesscom)
+      : await fetchChessComStats(normalizedUsername, { errors: [] });
+    
+    if (debug) {
+      debug.chesscom.statsStatus = chessComStatsStatus;
+    }
+
     if (chessComStats) {
       chesscomRapidRating = chessComStats.chess_rapid?.last?.rating ?? null;
       chesscomBlitzRating = chessComStats.chess_blitz?.last?.rating ?? null;
@@ -294,32 +437,73 @@ export async function GET(request: NextRequest) {
         null;
     }
 
+    // Fetch archives list status
+    try {
+      const archivesTestResponse = await fetchWithTimeout(
+        `https://api.chess.com/pub/player/${normalizedUsername}/games/archives`,
+        {
+          headers: { Accept: "application/json" },
+        }
+      );
+      if (debug) {
+        debug.chesscom.archivesStatus = archivesTestResponse.status;
+      }
+    } catch (error) {
+      // Already handled in countChessComGames
+    }
+
     // Count games
-    const rapidCounts = await countChessComGames(
-      normalizedUsername,
-      "rapid",
-      since24h,
-      since7d
-    );
+    const rapidCounts = debug
+      ? await countChessComGames(
+          normalizedUsername,
+          "rapid",
+          since24h,
+          since7d,
+          debug.chesscom
+        )
+      : await countChessComGames(
+          normalizedUsername,
+          "rapid",
+          since24h,
+          since7d,
+          { errors: [], archiveFetchStatuses: [] }
+        );
     chesscomRapid24h = rapidCounts.games24h;
     chesscomRapid7d = rapidCounts.games7d;
 
-    const blitzCounts = await countChessComGames(
-      normalizedUsername,
-      "blitz",
-      since24h,
-      since7d
-    );
+    const blitzCounts = debug
+      ? await countChessComGames(
+          normalizedUsername,
+          "blitz",
+          since24h,
+          since7d,
+          debug.chesscom
+        )
+      : await countChessComGames(
+          normalizedUsername,
+          "blitz",
+          since24h,
+          since7d,
+          { errors: [], archiveFetchStatuses: [] }
+        );
     chesscomBlitz24h = blitzCounts.games24h;
     chesscomBlitz7d = blitzCounts.games7d;
   }
 
+  if (debug) {
+    debug.timingsMs.chesscomTotal = Date.now() - chesscomStartTime;
+    debug.timingsMs.total = Date.now() - totalStartTime;
+  }
+
   // Check if user found on either platform
   if (!lichessUser && !chessComFound) {
-    return NextResponse.json(
-      { error: "User not found on Lichess or Chess.com" },
-      { status: 404 }
-    );
+    const errorResponse: { error: string; debug?: typeof debug } = {
+      error: "User not found on Lichess or Chess.com",
+    };
+    if (debug) {
+      errorResponse.debug = debug;
+    }
+    return NextResponse.json(errorResponse, { status: 404 });
   }
 
   // Combine results
@@ -335,9 +519,9 @@ export async function GET(request: NextRequest) {
   // Compute lastActiveLabel
   let lastActiveLabel = "—";
   if (rapidGames24h + blitzGames24h > 0) {
-    lastActiveLabel = "active <24h";
+    lastActiveLabel = "active_24h";
   } else if (rapidGames7d + blitzGames7d > 0) {
-    lastActiveLabel = "active <7d";
+    lastActiveLabel = "active_7d";
   }
 
   const result: PlayerLookupResult = {
@@ -358,6 +542,9 @@ export async function GET(request: NextRequest) {
     lastActiveLabel,
   };
 
+  if (debug) {
+    result.debug = debug;
+  }
+
   return NextResponse.json(result);
 }
-

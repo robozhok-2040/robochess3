@@ -26,7 +26,7 @@ export default function CoachDashboardPage() {
   const [isAdding, setIsAdding] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  const handleAdd = () => {
+  const handleAdd = async () => {
     const trimmedNickname = nicknameInput.trim();
     
     // Validate non-empty
@@ -47,28 +47,26 @@ export default function CoachDashboardPage() {
 
     // Clear error
     setErrorMsg(null);
+    setIsAdding(true);
 
-    // Add new student with placeholder values
-    const newStudent: Student = {
-      id: crypto.randomUUID(),
-      nickname: trimmedNickname,
-      lichessHandle: null,
-      chesscomHandle: null,
-      rapidGames24h: 0,
-      rapidGames7d: 0,
-      blitzGames24h: 0,
-      blitzGames7d: 0,
-      rapidRating: null,
-      blitzRating: null,
-      puzzlesSolved24h: 0,
-      puzzlesSolved7d: 0,
-      puzzleRating: null,
-      homeworkCompletionPct: 0,
-      lastActiveLabel: "—",
-    };
+    try {
+      const response = await fetch(
+        `/api/player-lookup?username=${encodeURIComponent(trimmedNickname)}`
+      );
 
-    setStudents([...students, newStudent]);
-    setNicknameInput("");
+      if (response.ok) {
+        const newStudent = await response.json();
+        setStudents([...students, newStudent]);
+        setNicknameInput("");
+      } else {
+        const errorData = await response.json();
+        setErrorMsg(errorData.error || "Failed to lookup player");
+      }
+    } catch (error) {
+      setErrorMsg("Network error. Please try again.");
+    } finally {
+      setIsAdding(false);
+    }
   };
 
   const handleClearTable = () => {
