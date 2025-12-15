@@ -1,12 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 
 type Student = {
   id: string;
   nickname: string;
-  lichessHandle: string | null;
-  chesscomHandle: string | null;
+  platform: "lichess" | "chesscom";
+  handle: string;
   rapidGames24h: number;
   rapidGames7d: number;
   blitzGames24h: number;
@@ -14,17 +14,33 @@ type Student = {
   rapidRating: number | null;
   blitzRating: number | null;
   puzzlesSolved24h: number;
-  puzzlesSolved7d: number;
   puzzleRating: number | null;
   homeworkCompletionPct: number;
   lastActiveLabel: string;
 };
+
+type SortKey =
+  | "index"
+  | "nickname"
+  | "platform"
+  | "rapid24h"
+  | "rapid7d"
+  | "blitz24h"
+  | "blitz7d"
+  | "rapidRating"
+  | "blitzRating"
+  | "puzzles24h"
+  | "puzzleRating"
+  | "homeworkPct"
+  | "lastActive";
 
 export default function CoachDashboardPage() {
   const [students, setStudents] = useState<Student[]>([]);
   const [nicknameInput, setNicknameInput] = useState("");
   const [isAdding, setIsAdding] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [sortKey, setSortKey] = useState<SortKey>("index");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
 
   const handleAdd = async () => {
     const trimmedNickname = nicknameInput.trim();
@@ -32,16 +48,6 @@ export default function CoachDashboardPage() {
     // Validate non-empty
     if (!trimmedNickname) {
       setErrorMsg("Nickname cannot be empty");
-      return;
-    }
-
-    // Check for duplicates (case-insensitive)
-    const isDuplicate = students.some(
-      (s) => s.nickname.toLowerCase() === trimmedNickname.toLowerCase()
-    );
-    
-    if (isDuplicate) {
-      setErrorMsg("Nickname already exists");
       return;
     }
 
@@ -55,9 +61,33 @@ export default function CoachDashboardPage() {
       );
 
       if (response.ok) {
-        const newStudent = await response.json();
-        setStudents([...students, newStudent]);
-        setNicknameInput("");
+        const data = await response.json();
+        const newRows: Student[] = data.rows || [];
+        
+        // Filter out duplicates by (platform + handle) case-insensitive
+        const filteredRows = newRows.filter((row) => {
+          const isDuplicate = students.some(
+            (s) =>
+              s.platform === row.platform &&
+              s.handle.toLowerCase() === row.handle.toLowerCase()
+          );
+          return !isDuplicate;
+        });
+
+        if (filteredRows.length === 0) {
+          setErrorMsg("All accounts for this nickname already exist");
+        } else {
+          // Sort: lichess first, then chesscom
+          const sortedRows = filteredRows.sort((a, b) => {
+            if (a.platform === "lichess" && b.platform === "chesscom") return -1;
+            if (a.platform === "chesscom" && b.platform === "lichess") return 1;
+            return 0;
+          });
+          
+          // Prepend to the beginning of the list
+          setStudents([...sortedRows, ...students]);
+          setNicknameInput("");
+        }
       } else {
         const errorData = await response.json();
         setErrorMsg(errorData.error || "Failed to lookup player");
@@ -77,6 +107,108 @@ export default function CoachDashboardPage() {
   const handleDelete = (id: string) => {
     setStudents(students.filter((student) => student.id !== id));
   };
+
+  const handleSort = (key: SortKey) => {
+    if (sortKey === key) {
+      setSortDir(sortDir === "asc" ? "desc" : "asc");
+    } else {
+      setSortKey(key);
+      setSortDir("asc");
+    }
+  };
+
+  const sortedStudents = useMemo(() => {
+    const sorted = [...students];
+
+    if (sortKey === "index") {
+      // Keep insertion order (already sorted)
+      return sortDir === "asc" ? sorted : sorted.reverse();
+    }
+
+    sorted.sort((a, b) => {
+      let aVal: any;
+      let bVal: any;
+      let isString = false;
+
+      switch (sortKey) {
+        case "nickname":
+          aVal = a.nickname.toLowerCase();
+          bVal = b.nickname.toLowerCase();
+          isString = true;
+          break;
+        case "platform":
+          aVal = a.platform.toLowerCase();
+          bVal = b.platform.toLowerCase();
+          isString = true;
+          break;
+        case "rapid24h":
+          aVal = a.rapidGames24h;
+          bVal = b.rapidGames24h;
+          break;
+        case "rapid7d":
+          aVal = a.rapidGames7d;
+          bVal = b.rapidGames7d;
+          break;
+        case "blitz24h":
+          aVal = a.blitzGames24h;
+          bVal = b.blitzGames24h;
+          break;
+        case "blitz7d":
+          aVal = a.blitzGames7d;
+          bVal = b.blitzGames7d;
+          break;
+        case "rapidRating":
+          aVal = a.rapidRating;
+          bVal = b.rapidRating;
+          break;
+        case "blitzRating":
+          aVal = a.blitzRating;
+          bVal = b.blitzRating;
+          break;
+        case "puzzles24h":
+          aVal = a.puzzlesSolved24h;
+          bVal = b.puzzlesSolved24h;
+          break;
+        case "puzzleRating":
+          aVal = a.puzzleRating;
+          bVal = b.puzzleRating;
+          break;
+        case "homeworkPct":
+          aVal = a.homeworkCompletionPct;
+          bVal = b.homeworkCompletionPct;
+          break;
+        case "lastActive":
+          aVal = (a.lastActiveLabel || "").toLowerCase();
+          bVal = (b.lastActiveLabel || "").toLowerCase();
+          isString = true;
+          break;
+        default:
+          return 0;
+      }
+
+      if (isString) {
+        // String comparison (case-insensitive, stable)
+        if (aVal < bVal) return sortDir === "asc" ? -1 : 1;
+        if (aVal > bVal) return sortDir === "asc" ? 1 : -1;
+        return 0;
+      } else {
+        // Numeric comparison (null/undefined/"—" go to bottom)
+        const aMissing = aVal === null || aVal === undefined || aVal === "—";
+        const bMissing = bVal === null || bVal === undefined || bVal === "—";
+
+        if (aMissing && bMissing) return 0;
+        if (aMissing) return 1; // a goes to bottom
+        if (bMissing) return -1; // b goes to bottom
+
+        // Both are numbers, compare normally
+        if (aVal < bVal) return sortDir === "asc" ? -1 : 1;
+        if (aVal > bVal) return sortDir === "asc" ? 1 : -1;
+        return 0;
+      }
+    });
+
+    return sorted;
+  }, [students, sortKey, sortDir]);
 
   return (
     <div>
@@ -127,29 +259,135 @@ export default function CoachDashboardPage() {
         <table className="w-full border-collapse border border-gray-300 text-sm">
           <thead>
             <tr className="bg-gray-50">
-              <th className="border border-gray-300 px-3 py-2 text-left font-semibold">
-                Nickname
+              <th
+                className="border border-gray-300 px-3 py-2 text-center font-semibold cursor-pointer hover:bg-gray-100"
+                onClick={() => handleSort("index")}
+              >
+                #{sortKey === "index" && (
+                  <span className="ml-1 text-xs">
+                    {sortDir === "asc" ? "▲" : "▼"}
+                  </span>
+                )}
               </th>
-              <th className="border border-gray-300 px-3 py-2 text-left font-semibold">
-                Platforms
+              <th
+                className="border border-gray-300 px-3 py-2 text-left font-semibold cursor-pointer hover:bg-gray-100"
+                onClick={() => handleSort("nickname")}
+              >
+                Nickname{sortKey === "nickname" && (
+                  <span className="ml-1 text-xs">
+                    {sortDir === "asc" ? "▲" : "▼"}
+                  </span>
+                )}
               </th>
-              <th className="border border-gray-300 px-3 py-2 text-center font-semibold">
-                Rapid games
+              <th
+                className="border border-gray-300 px-3 py-2 text-left font-semibold cursor-pointer hover:bg-gray-100"
+                onClick={() => handleSort("platform")}
+              >
+                Platform{sortKey === "platform" && (
+                  <span className="ml-1 text-xs">
+                    {sortDir === "asc" ? "▲" : "▼"}
+                  </span>
+                )}
               </th>
-              <th className="border border-gray-300 px-3 py-2 text-center font-semibold">
-                Blitz games
+              <th
+                className="border border-gray-300 px-3 py-2 text-center font-semibold cursor-pointer hover:bg-gray-100"
+                onClick={() => handleSort("rapid24h")}
+              >
+                Rapid 24h{sortKey === "rapid24h" && (
+                  <span className="ml-1 text-xs">
+                    {sortDir === "asc" ? "▲" : "▼"}
+                  </span>
+                )}
               </th>
-              <th className="border border-gray-300 px-3 py-2 text-center font-semibold">
-                Ratings
+              <th
+                className="border border-gray-300 px-3 py-2 text-center font-semibold cursor-pointer hover:bg-gray-100"
+                onClick={() => handleSort("rapid7d")}
+              >
+                Rapid 7d{sortKey === "rapid7d" && (
+                  <span className="ml-1 text-xs">
+                    {sortDir === "asc" ? "▲" : "▼"}
+                  </span>
+                )}
               </th>
-              <th className="border border-gray-300 px-3 py-2 text-center font-semibold">
-                Puzzles
+              <th
+                className="border border-gray-300 px-3 py-2 text-center font-semibold cursor-pointer hover:bg-gray-100"
+                onClick={() => handleSort("blitz24h")}
+              >
+                Blitz 24h{sortKey === "blitz24h" && (
+                  <span className="ml-1 text-xs">
+                    {sortDir === "asc" ? "▲" : "▼"}
+                  </span>
+                )}
               </th>
-              <th className="border border-gray-300 px-3 py-2 text-center font-semibold">
-                Homework %
+              <th
+                className="border border-gray-300 px-3 py-2 text-center font-semibold cursor-pointer hover:bg-gray-100"
+                onClick={() => handleSort("blitz7d")}
+              >
+                Blitz 7d{sortKey === "blitz7d" && (
+                  <span className="ml-1 text-xs">
+                    {sortDir === "asc" ? "▲" : "▼"}
+                  </span>
+                )}
               </th>
-              <th className="border border-gray-300 px-3 py-2 text-left font-semibold">
-                Last active
+              <th
+                className="border border-gray-300 px-3 py-2 text-center font-semibold cursor-pointer hover:bg-gray-100"
+                onClick={() => handleSort("rapidRating")}
+              >
+                Rapid rating{sortKey === "rapidRating" && (
+                  <span className="ml-1 text-xs">
+                    {sortDir === "asc" ? "▲" : "▼"}
+                  </span>
+                )}
+              </th>
+              <th
+                className="border border-gray-300 px-3 py-2 text-center font-semibold cursor-pointer hover:bg-gray-100"
+                onClick={() => handleSort("blitzRating")}
+              >
+                Blitz rating{sortKey === "blitzRating" && (
+                  <span className="ml-1 text-xs">
+                    {sortDir === "asc" ? "▲" : "▼"}
+                  </span>
+                )}
+              </th>
+              <th
+                className="border border-gray-300 px-3 py-2 text-center font-semibold cursor-pointer hover:bg-gray-100"
+                onClick={() => handleSort("puzzles24h")}
+              >
+                Puzzles 24h{sortKey === "puzzles24h" && (
+                  <span className="ml-1 text-xs">
+                    {sortDir === "asc" ? "▲" : "▼"}
+                  </span>
+                )}
+              </th>
+              <th
+                className="border border-gray-300 px-3 py-2 text-center font-semibold cursor-pointer hover:bg-gray-100"
+                onClick={() => handleSort("puzzleRating")}
+              >
+                Puzzle rating{sortKey === "puzzleRating" && (
+                  <span className="ml-1 text-xs">
+                    {sortDir === "asc" ? "▲" : "▼"}
+                  </span>
+                )}
+              </th>
+              <th
+                className="border border-gray-300 px-3 py-2 text-center font-semibold cursor-pointer hover:bg-gray-100"
+                onClick={() => handleSort("homeworkPct")}
+              >
+                Homework %{sortKey === "homeworkPct" && (
+                  <span className="ml-1 text-xs">
+                    {sortDir === "asc" ? "▲" : "▼"}
+                  </span>
+                )}
+              </th>
+              <th
+                className="border border-gray-300 px-3 py-2 text-left font-semibold cursor-pointer hover:bg-gray-100"
+                onClick={() => handleSort("lastActive")}
+              >
+                Last active{sortKey === "lastActive" && (
+                  <span className="ml-1 text-xs">
+                    {sortDir === "asc" ? "▲" : "▼"}
+                  </span>
+                )}
               </th>
               <th className="border border-gray-300 px-3 py-2 text-center font-semibold">
                 Actions
@@ -157,64 +395,44 @@ export default function CoachDashboardPage() {
             </tr>
           </thead>
           <tbody>
-            {students.map((student) => (
+            {sortedStudents.map((student, index) => (
               <tr key={student.id} className="hover:bg-gray-50">
+                <td className="border border-gray-300 px-3 py-2 text-center">
+                  {index + 1}
+                </td>
                 <td className="border border-gray-300 px-3 py-2">
                   {student.nickname}
                 </td>
                 <td className="border border-gray-300 px-3 py-2">
-                  <div className="flex flex-col gap-1">
-                    <span>
-                      Lichess:{" "}
-                      {student.lichessHandle !== null
-                        ? student.lichessHandle
-                        : "—"}
-                    </span>
-                    <span>
-                      Chess.com:{" "}
-                      {student.chesscomHandle !== null
-                        ? student.chesscomHandle
-                        : "—"}
-                    </span>
-                  </div>
+                  {student.platform === "lichess"
+                    ? `Lichess: ${student.handle}`
+                    : `Chess.com: ${student.handle}`}
                 </td>
-                <td className="border border-gray-300 px-3 py-2 text-center">
-                  <div className="flex flex-col gap-1">
-                    <span>{student.rapidGames24h} (24h)</span>
-                    <span>{student.rapidGames7d} (7d)</span>
-                  </div>
+                <td className="border border-gray-300 px-3 py-2 text-right">
+                  {student.rapidGames24h}
                 </td>
-                <td className="border border-gray-300 px-3 py-2 text-center">
-                  <div className="flex flex-col gap-1">
-                    <span>{student.blitzGames24h} (24h)</span>
-                    <span>{student.blitzGames7d} (7d)</span>
-                  </div>
+                <td className="border border-gray-300 px-3 py-2 text-right">
+                  {student.rapidGames7d}
                 </td>
-                <td className="border border-gray-300 px-3 py-2 text-center">
-                  <div className="flex flex-col gap-1">
-                    <span>
-                      Rapid:{" "}
-                      {student.rapidRating !== null ? student.rapidRating : "—"}
-                    </span>
-                    <span>
-                      Blitz:{" "}
-                      {student.blitzRating !== null ? student.blitzRating : "—"}
-                    </span>
-                  </div>
+                <td className="border border-gray-300 px-3 py-2 text-right">
+                  {student.blitzGames24h}
                 </td>
-                <td className="border border-gray-300 px-3 py-2 text-center">
-                  <div className="flex flex-col gap-1">
-                    <span>24h: {student.puzzlesSolved24h}</span>
-                    <span>7d: {student.puzzlesSolved7d}</span>
-                    <span>
-                      Rating:{" "}
-                      {student.puzzleRating !== null
-                        ? student.puzzleRating
-                        : "—"}
-                    </span>
-                  </div>
+                <td className="border border-gray-300 px-3 py-2 text-right">
+                  {student.blitzGames7d}
                 </td>
-                <td className="border border-gray-300 px-3 py-2 text-center">
+                <td className="border border-gray-300 px-3 py-2 text-right">
+                  {student.rapidRating !== null ? student.rapidRating : "—"}
+                </td>
+                <td className="border border-gray-300 px-3 py-2 text-right">
+                  {student.blitzRating !== null ? student.blitzRating : "—"}
+                </td>
+                <td className="border border-gray-300 px-3 py-2 text-right">
+                  {student.puzzlesSolved24h}
+                </td>
+                <td className="border border-gray-300 px-3 py-2 text-right">
+                  {student.puzzleRating !== null ? student.puzzleRating : "—"}
+                </td>
+                <td className="border border-gray-300 px-3 py-2 text-right">
                   {student.homeworkCompletionPct}%
                 </td>
                 <td className="border border-gray-300 px-3 py-2">

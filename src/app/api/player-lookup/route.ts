@@ -26,11 +26,11 @@ type ChessComArchive = {
   games?: ChessComGame[];
 };
 
-type PlayerLookupResult = {
+type PlayerRow = {
   id: string;
   nickname: string;
-  lichessHandle: string | null;
-  chesscomHandle: string | null;
+  platform: "lichess" | "chesscom";
+  handle: string;
   rapidGames24h: number;
   rapidGames7d: number;
   blitzGames24h: number;
@@ -38,10 +38,13 @@ type PlayerLookupResult = {
   rapidRating: number | null;
   blitzRating: number | null;
   puzzlesSolved24h: number;
-  puzzlesSolved7d: number;
   puzzleRating: number | null;
   homeworkCompletionPct: number;
   lastActiveLabel: string;
+};
+
+type PlayerLookupResponse = {
+  rows: PlayerRow[];
   debug?: {
     lichess: {
       profileStatus: number | null;
@@ -506,45 +509,74 @@ export async function GET(request: NextRequest) {
     return NextResponse.json(errorResponse, { status: 404 });
   }
 
-  // Combine results
-  const rapidRating = lichessRapidRating ?? chesscomRapidRating ?? null;
-  const blitzRating = lichessBlitzRating ?? chesscomBlitzRating ?? null;
-  const puzzleRating = lichessPuzzleRating ?? chesscomPuzzleRating ?? null;
+  // Create rows for each platform found
+  const rows: PlayerRow[] = [];
 
-  const rapidGames24h = lichessRapid24h + chesscomRapid24h;
-  const rapidGames7d = lichessRapid7d + chesscomRapid7d;
-  const blitzGames24h = lichessBlitz24h + chesscomBlitz24h;
-  const blitzGames7d = lichessBlitz7d + chesscomBlitz7d;
+  // Lichess row
+  if (lichessUser) {
+    const lichessGames24h = lichessRapid24h + lichessBlitz24h;
+    const lichessGames7d = lichessRapid7d + lichessBlitz7d;
+    let lichessLastActive = "—";
+    if (lichessGames24h > 0) {
+      lichessLastActive = "active_24h";
+    } else if (lichessGames7d > 0) {
+      lichessLastActive = "active_7d";
+    }
 
-  // Compute lastActiveLabel
-  let lastActiveLabel = "—";
-  if (rapidGames24h + blitzGames24h > 0) {
-    lastActiveLabel = "active_24h";
-  } else if (rapidGames7d + blitzGames7d > 0) {
-    lastActiveLabel = "active_7d";
+    rows.push({
+      id: crypto.randomUUID(),
+      nickname: displayNickname,
+      platform: "lichess",
+      handle: lichessHandle!,
+      rapidGames24h: lichessRapid24h,
+      rapidGames7d: lichessRapid7d,
+      blitzGames24h: lichessBlitz24h,
+      blitzGames7d: lichessBlitz7d,
+      rapidRating: lichessRapidRating,
+      blitzRating: lichessBlitzRating,
+      puzzlesSolved24h: 0, // MVP placeholder
+      puzzleRating: lichessPuzzleRating,
+      homeworkCompletionPct: 0, // MVP placeholder
+      lastActiveLabel: lichessLastActive,
+    });
   }
 
-  const result: PlayerLookupResult = {
-    id: crypto.randomUUID(),
-    nickname: displayNickname,
-    lichessHandle,
-    chesscomHandle,
-    rapidGames24h,
-    rapidGames7d,
-    blitzGames24h,
-    blitzGames7d,
-    rapidRating,
-    blitzRating,
-    puzzlesSolved24h: 0, // MVP placeholder
-    puzzlesSolved7d: 0, // MVP placeholder
-    puzzleRating,
-    homeworkCompletionPct: 0, // MVP placeholder
-    lastActiveLabel,
+  // Chess.com row
+  if (chessComFound) {
+    const chesscomGames24h = chesscomRapid24h + chesscomBlitz24h;
+    const chesscomGames7d = chesscomRapid7d + chesscomBlitz7d;
+    let chesscomLastActive = "—";
+    if (chesscomGames24h > 0) {
+      chesscomLastActive = "active_24h";
+    } else if (chesscomGames7d > 0) {
+      chesscomLastActive = "active_7d";
+    }
+
+    rows.push({
+      id: crypto.randomUUID(),
+      nickname: displayNickname,
+      platform: "chesscom",
+      handle: chesscomHandle!,
+      rapidGames24h: chesscomRapid24h,
+      rapidGames7d: chesscomRapid7d,
+      blitzGames24h: chesscomBlitz24h,
+      blitzGames7d: chesscomBlitz7d,
+      rapidRating: chesscomRapidRating,
+      blitzRating: chesscomBlitzRating,
+      puzzlesSolved24h: 0, // MVP placeholder
+      puzzleRating: chesscomPuzzleRating,
+      homeworkCompletionPct: 0, // MVP placeholder
+      lastActiveLabel: chesscomLastActive,
+    });
+  }
+
+  const response: PlayerLookupResponse = {
+    rows,
   };
 
   if (debug) {
-    result.debug = debug;
+    response.debug = debug;
   }
 
-  return NextResponse.json(result);
+  return NextResponse.json(response);
 }
