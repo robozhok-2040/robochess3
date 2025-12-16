@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { createClient } from "@/utils/supabase/server";
 
 type LichessUser = {
   perfs?: {
@@ -568,6 +569,73 @@ export async function GET(request: NextRequest) {
       homeworkCompletionPct: 0, // MVP placeholder
       lastActiveLabel: chesscomLastActive,
     });
+  }
+
+  // Save to Supabase database
+  try {
+    const supabase = await createClient();
+
+    for (const row of rows) {
+      try {
+        // Check if platform_connection already exists
+        const { data: existingConnection } = await supabase
+          .from("platform_connections")
+          .select("user_id, id")
+          .eq("platform", row.platform)
+          .eq("platform_username", row.handle)
+          .maybeSingle();
+
+        let userId: string;
+
+        if (existingConnection) {
+          // Update existing connection
+          userId = existingConnection.user_id;
+          await supabase
+            .from("platform_connections")
+            .update({ last_synced_at: new Date().toISOString() })
+            .eq("id", existingConnection.id);
+        } else {
+          // Create new profile and platform_connection
+          userId = row.id;
+
+          // Insert profile
+          await supabase.from("profiles").insert({
+            id: userId,
+            full_name: row.nickname,
+            role: "student",
+          });
+
+          // Insert platform_connection
+          await supabase.from("platform_connections").insert({
+            user_id: userId,
+            platform: row.platform,
+            platform_username: row.handle,
+            last_synced_at: new Date().toISOString(),
+          });
+        }
+
+        // Always insert stats_snapshot
+        const totalGames = row.rapidGames24h + row.blitzGames24h;
+        await supabase.from("stats_snapshots").insert({
+          user_id: userId,
+          source: row.platform,
+          rating_rapid: row.rapidRating,
+          rating_blitz: row.blitzRating,
+          puzzle_rating: row.puzzleRating,
+          games_played_24h: totalGames,
+          games_played_7d: row.rapidGames7d + row.blitzGames7d,
+          created_at: new Date().toISOString(),
+        });
+
+        console.log(`Saved to DB: ${row.nickname} (${row.platform})`);
+      } catch (rowError) {
+        console.error(`Error saving row for ${row.nickname}:`, rowError);
+        // Continue with next row
+      }
+    }
+  } catch (dbError) {
+    console.error("Error saving to Supabase:", dbError);
+    // Continue - don't break the API response
   }
 
   const response: PlayerLookupResponse = {
