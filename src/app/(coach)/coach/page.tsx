@@ -43,6 +43,319 @@ export default function CoachDashboardPage() {
   const [sortKey, setSortKey] = useState<SortKey>("index");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
 
+  // Update student stats from live APIs
+  async function updateStudentStats(studentsList: Student[]) {
+    if (studentsList.length === 0) return;
+
+    try {
+      // Fetch stats for all students in parallel
+      const updatePromises = studentsList.map(async (student) => {
+        // Skip if no handle
+        if (!student.handle) {
+          return { studentId: student.id, updates: null };
+        }
+
+        try {
+          if (student.platform === "lichess") {
+            // Fetch Lichess stats
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 8000);
+            
+            try {
+              const response = await fetch(
+                `https://lichess.org/api/user/${encodeURIComponent(student.handle)}`,
+                {
+                  headers: { Accept: "application/json" },
+                  signal: controller.signal,
+                }
+              );
+              
+              clearTimeout(timeoutId);
+
+            if (!response.ok) {
+              console.warn(`Failed to fetch Lichess stats for ${student.handle}: ${response.status}`);
+              return { studentId: student.id, updates: null };
+            }
+
+            const data = await response.json();
+
+            // Safe parsing with optional chaining
+            const updates = {
+              rapidRating: data.perfs?.rapid?.rating || null,
+              blitzRating: data.perfs?.blitz?.rating || null,
+              puzzleRating: data.perfs?.puzzle?.rating || null,
+            };
+
+              console.log(`✅ Lichess stats fetched for ${student.handle}:`, updates);
+              return { studentId: student.id, updates };
+            } catch (fetchError) {
+              clearTimeout(timeoutId);
+              throw fetchError;
+            }
+
+          } else if (student.platform === "chesscom") {
+            // Fetch Chess.com stats
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 8000);
+            
+            try {
+              const response = await fetch(
+                `https://api.chess.com/pub/player/${encodeURIComponent(student.handle)}/stats`,
+                {
+                  headers: { Accept: "application/json" },
+                  signal: controller.signal,
+                }
+              );
+              
+              clearTimeout(timeoutId);
+
+            if (!response.ok) {
+              console.warn(`Failed to fetch Chess.com stats for ${student.handle}: ${response.status}`);
+              return { studentId: student.id, updates: null };
+            }
+
+            const data = await response.json();
+
+            // Safe parsing with optional chaining
+            const updates = {
+              rapidRating: data.chess_rapid?.last?.rating || null,
+              blitzRating: data.chess_blitz?.last?.rating || null,
+              puzzleRating: data.tactics?.highest?.rating || null,
+            };
+
+              console.log(`✅ Chess.com stats fetched for ${student.handle}:`, updates);
+              return { studentId: student.id, updates };
+            } catch (fetchError) {
+              clearTimeout(timeoutId);
+              throw fetchError;
+            }
+          }
+
+          return { studentId: student.id, updates: null };
+        } catch (error) {
+          console.warn(`Error fetching stats for ${student.handle}:`, error);
+          return { studentId: student.id, updates: null };
+        }
+      });
+
+      const results = await Promise.all(updatePromises);
+
+      // Update state with fetched stats
+      setStudents((prevStudents) => {
+        return prevStudents.map((student) => {
+          const result = results.find((r) => r.studentId === student.id);
+          if (result && result.updates) {
+            return {
+              ...student,
+              rapidRating: result.updates.rapidRating ?? student.rapidRating,
+              blitzRating: result.updates.blitzRating ?? student.blitzRating,
+              puzzleRating: result.updates.puzzleRating ?? student.puzzleRating,
+            };
+          }
+          return student;
+        });
+      });
+    } catch (error) {
+      console.error("Error updating student stats:", error);
+    }
+  }
+
+  // Fetch Lichess game activity for a specific username
+  async function fetchLichessGames(
+    username: string
+  ): Promise<{ rapidGames24h: number; rapidGames7d: number; blitzGames24h: number; blitzGames7d: number }> {
+    const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
+
+    try {
+      // 1. Fetch as text (NOT json) to handle newline-delimited response
+      const res = await fetch(
+        `https://lichess.org/api/games/user/${encodeURIComponent(username)}?since=${sevenDaysAgo}&max=50&perfType=blitz,rapid,bullet`,
+        { headers: { Accept: "application/x-ndjson" } }
+      );
+
+      if (!res.ok) {
+        console.warn(`Failed to fetch Lichess games for ${username}: ${res.status}`);
+        return { rapidGames24h: 0, rapidGames7d: 0, blitzGames24h: 0, blitzGames7d: 0 };
+      }
+
+      const text = await res.text();
+
+      // 2. Parse NDJSON (split by newline)
+      if (!text.trim()) {
+        console.log(`No games found for ${username}`);
+        return { rapidGames24h: 0, rapidGames7d: 0, blitzGames24h: 0, blitzGames7d: 0 };
+      }
+
+      const games = text
+        .trim()
+        .split("\n")
+        .map((line) => {
+          try {
+            return JSON.parse(line);
+          } catch (e) {
+            return null;
+          }
+        })
+        .filter((g) => g !== null);
+
+      // 3. Calculate Stats (separate rapid and blitz)
+      let rapidGames7d = 0;
+      let rapidGames24h = 0;
+      let blitzGames7d = 0;
+      let blitzGames24h = 0;
+
+      for (const game of games) {
+        const perf = game.perf; // 'rapid', 'blitz', 'bullet', etc.
+        const createdAt = game.createdAt;
+
+        if (!createdAt) continue;
+
+        const gameTime = new Date(createdAt).getTime();
+        const isWithin24h = gameTime > oneDayAgo;
+
+        if (perf === "rapid") {
+          rapidGames7d++; // All games are within 7d (filtered by since param)
+          if (isWithin24h) rapidGames24h++;
+        } else if (perf === "blitz") {
+          blitzGames7d++; // All games are within 7d (filtered by since param)
+          if (isWithin24h) blitzGames24h++;
+        }
+      }
+
+      console.log(
+        `Lichess Activity for ${username}: Rapid 7d=${rapidGames7d}, Rapid 24h=${rapidGames24h}, Blitz 7d=${blitzGames7d}, Blitz 24h=${blitzGames24h}`
+      );
+
+      return { rapidGames24h, rapidGames7d, blitzGames24h, blitzGames7d };
+    } catch (error) {
+      console.error(`Error fetching games for ${username}:`, error);
+      return { rapidGames24h: 0, rapidGames7d: 0, blitzGames24h: 0, blitzGames7d: 0 };
+    }
+  }
+
+  // Fetch recent game activity (last 7 days and 24 hours)
+  async function fetchRecentActivity(studentsList: Student[]) {
+    if (studentsList.length === 0) return;
+
+    const now = Date.now();
+    const timestamp24hAgo = now - 24 * 60 * 60 * 1000;
+    const timestamp7dAgo = now - 7 * 24 * 60 * 60 * 1000;
+
+    try {
+      // Fetch activity for all students in parallel
+      const activityPromises = studentsList.map(async (student) => {
+        // Skip if no handle
+        if (!student.handle) {
+          return { studentId: student.id, activity: null };
+        }
+
+        try {
+          if (student.platform === "lichess") {
+            // Use dedicated Lichess games function
+            const activity = await fetchLichessGames(student.handle);
+
+            console.log(`✅ Lichess activity fetched for ${student.handle}:`, activity);
+            return { studentId: student.id, activity };
+
+          } else if (student.platform === "chesscom") {
+            // Fetch Chess.com games (current month)
+            const today = new Date();
+            const year = today.getFullYear();
+            const month = String(today.getMonth() + 1).padStart(2, "0");
+
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+            try {
+              const response = await fetch(
+                `https://api.chess.com/pub/player/${encodeURIComponent(student.handle)}/games/${year}/${month}`,
+                {
+                  headers: { Accept: "application/json" },
+                  signal: controller.signal,
+                }
+              );
+
+              clearTimeout(timeoutId);
+
+              if (!response.ok) {
+                console.warn(`Failed to fetch Chess.com games for ${student.handle}: ${response.status}`);
+                return { studentId: student.id, activity: null };
+              }
+
+              const data = await response.json();
+              const games = data.games || [];
+
+              let rapidGames7d = 0;
+              let rapidGames24h = 0;
+              let blitzGames7d = 0;
+              let blitzGames24h = 0;
+
+              for (const game of games) {
+                const timeClass = game.time_class; // 'blitz', 'rapid', etc.
+                const endTime = game.end_time; // Unix timestamp in seconds
+
+                if (!endTime) continue;
+
+                // Convert to milliseconds
+                const endTimeMs = endTime * 1000;
+                const isWithin7d = endTimeMs >= timestamp7dAgo;
+                const isWithin24h = endTimeMs >= timestamp24hAgo;
+
+                if (timeClass === "rapid") {
+                  if (isWithin7d) rapidGames7d++;
+                  if (isWithin24h) rapidGames24h++;
+                } else if (timeClass === "blitz") {
+                  if (isWithin7d) blitzGames7d++;
+                  if (isWithin24h) blitzGames24h++;
+                }
+              }
+
+              const activity = {
+                rapidGames24h,
+                rapidGames7d,
+                blitzGames24h,
+                blitzGames7d,
+              };
+
+              console.log(`✅ Chess.com activity fetched for ${student.handle}:`, activity);
+              return { studentId: student.id, activity };
+            } catch (fetchError) {
+              clearTimeout(timeoutId);
+              throw fetchError;
+            }
+          }
+
+          return { studentId: student.id, activity: null };
+        } catch (error) {
+          console.warn(`Error fetching activity for ${student.handle}:`, error);
+          return { studentId: student.id, activity: null };
+        }
+      });
+
+      const results = await Promise.all(activityPromises);
+
+      // Update state with fetched activity
+      setStudents((prevStudents) => {
+        return prevStudents.map((student) => {
+          const result = results.find((r) => r.studentId === student.id);
+          if (result && result.activity) {
+            return {
+              ...student,
+              rapidGames24h: result.activity.rapidGames24h,
+              rapidGames7d: result.activity.rapidGames7d,
+              blitzGames24h: result.activity.blitzGames24h,
+              blitzGames7d: result.activity.blitzGames7d,
+            };
+          }
+          return student;
+        });
+      });
+    } catch (error) {
+      console.error("Error fetching recent activity:", error);
+    }
+  }
+
   // Fetch students from Supabase on mount
   useEffect(() => {
     async function fetchStudents() {
@@ -96,6 +409,12 @@ export default function CoachDashboardPage() {
         });
 
         setStudents(mappedStudents);
+
+        // Trigger stats update after students are loaded
+        await updateStudentStats(mappedStudents);
+        
+        // Fetch recent activity after stats are loaded
+        await fetchRecentActivity(mappedStudents);
       } catch (err) {
         console.error("Error loading students:", err);
       }
@@ -147,8 +466,12 @@ export default function CoachDashboardPage() {
           });
           
           // Prepend to the beginning of the list
-          setStudents([...sortedRows, ...students]);
+          const updatedStudents = [...sortedRows, ...students];
+          setStudents(updatedStudents);
           setNicknameInput("");
+
+          // Update stats for all students (including newly added ones)
+          updateStudentStats(updatedStudents);
         }
       } else {
         const errorData = await response.json();
