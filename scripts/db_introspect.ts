@@ -35,85 +35,52 @@ async function introspectDatabase() {
     process.exit(1);
   }
 
+  // Parse connection URL for diagnostics
+  const url = new URL(databaseUrl);
+  console.log("[db:introspect] Connection info:");
+  console.log("  host:", url.hostname);
+  console.log("  port:", url.port || "5432");
+  console.log("  user:", url.username);
+  console.log("  database:", url.pathname.slice(1)); // Remove leading '/'
+  console.log("");
+
+  // Force SSL connection - remove sslmode from URL if present, we'll handle it via config
+  const cleanUrl = databaseUrl.split("?")[0];
+  
   const client = new Client({
-    connectionString: databaseUrl,
+    connectionString: cleanUrl,
+    ssl: {
+      rejectUnauthorized: false,
+    },
   });
 
   try {
     await client.connect();
     console.log("✓ Connected to database\n");
 
-    // Get current database and schema
-    const dbResult = await client.query(
-      "SELECT current_database(), current_schema()"
+    // Query A: current_user, current_database
+    console.log("Query A: SELECT current_user, current_database();");
+    const queryA = await client.query("SELECT current_user, current_database()");
+    console.log("Result:", queryA.rows[0]);
+    console.log("");
+
+    // Query B: count of tables in public schema
+    console.log("Query B: SELECT count(*) as tables FROM information_schema.tables WHERE table_schema='public';");
+    const queryB = await client.query(
+      "SELECT count(*) as tables FROM information_schema.tables WHERE table_schema='public'"
     );
-    console.log("Current database:", dbResult.rows[0].current_database);
-    console.log("Current schema:", dbResult.rows[0].current_schema);
+    console.log("Result:", queryB.rows[0]);
     console.log("");
 
-    // List all tables in public schema
-    const tablesResult = await client.query(`
-      SELECT table_name
-      FROM information_schema.tables
-      WHERE table_schema = 'public'
-      AND table_type = 'BASE TABLE'
-      ORDER BY table_name
-    `);
-
-    console.log(`Tables in public schema (${tablesResult.rows.length}):`);
-    console.log("=".repeat(50));
-
-    // Get row count for each table
-    for (const row of tablesResult.rows) {
-      const tableName = row.table_name;
-      try {
-        const countResult = await client.query(
-          `SELECT count(*) FROM "${tableName}"`
-        );
-        const count = countResult.rows[0].count;
-        console.log(`  ${tableName}: ${count} rows`);
-      } catch (err) {
-        console.log(`  ${tableName}: error getting count - ${err}`);
-      }
-    }
-
-    console.log("");
-
-    // Search for tables/columns containing 'puzzle' or 'lichess'
-    const searchResult = await client.query(`
-      SELECT 
-        table_name,
-        column_name,
-        data_type
-      FROM information_schema.columns
-      WHERE table_schema = 'public'
-      AND (
-        LOWER(table_name) LIKE '%puzzle%' 
-        OR LOWER(table_name) LIKE '%lichess%'
-        OR LOWER(column_name) LIKE '%puzzle%'
-        OR LOWER(column_name) LIKE '%lichess%'
-      )
-      ORDER BY table_name, ordinal_position
-    `);
-
-    console.log(`Tables/columns containing 'puzzle' or 'lichess':`);
-    console.log("=".repeat(50));
-
-    if (searchResult.rows.length === 0) {
-      console.log("  (none found)");
-    } else {
-      let currentTable = "";
-      for (const row of searchResult.rows) {
-        if (row.table_name !== currentTable) {
-          currentTable = row.table_name;
-          console.log(`\n  Table: ${row.table_name}`);
-        }
-        console.log(
-          `    - ${row.column_name} (${row.data_type})`
-        );
-      }
-    }
-
+    // Query C: table names in public schema (limit 50)
+    console.log("Query C: SELECT table_name FROM information_schema.tables WHERE table_schema='public' ORDER BY table_name LIMIT 50;");
+    const queryC = await client.query(
+      "SELECT table_name FROM information_schema.tables WHERE table_schema='public' ORDER BY table_name LIMIT 50"
+    );
+    console.log(`Result (${queryC.rows.length} tables):`);
+    queryC.rows.forEach((row) => {
+      console.log(`  - ${row.table_name}`);
+    });
     console.log("");
   } catch (err) {
     console.error("Error:", err);
