@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
+import { createClient } from "@/utils/supabase/client";
 
 type Student = {
   id: string;
@@ -41,6 +42,67 @@ export default function CoachDashboardPage() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [sortKey, setSortKey] = useState<SortKey>("index");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+
+  // Fetch students from Supabase on mount
+  useEffect(() => {
+    async function fetchStudents() {
+      try {
+        const supabase = createClient();
+        const { data, error } = await supabase
+          .from("profiles")
+          .select("*, platform_connections(*), stats_snapshots(*)")
+          .eq("role", "student");
+
+        if (error) {
+          console.error("Error fetching students:", error);
+          return;
+        }
+
+        if (!data) return;
+
+        // Map DB results to Student type
+        const mappedStudents: Student[] = data.map((profile: any) => {
+          // Get platform connection (use first one, default to lichess)
+          const platformConn = profile.platform_connections?.[0];
+          const platform = (platformConn?.platform || "lichess") as "lichess" | "chesscom";
+          const handle = platformConn?.platform_username || profile.full_name || profile.name || "";
+
+          // Get latest stats snapshot (sort by created_at desc)
+          const statsSnapshots = profile.stats_snapshots || [];
+          const latestStats = statsSnapshots.length > 0
+            ? [...statsSnapshots].sort((a: any, b: any) => {
+                const dateA = a.created_at ? new Date(a.created_at).getTime() : 0;
+                const dateB = b.created_at ? new Date(b.created_at).getTime() : 0;
+                return dateB - dateA;
+              })[0]
+            : null;
+
+          return {
+            id: profile.id,
+            nickname: profile.full_name || profile.name || "Unnamed",
+            platform,
+            handle,
+            rapidGames24h: latestStats?.games_played_24h || 0,
+            rapidGames7d: latestStats?.games_played_7d || 0,
+            blitzGames24h: 0, // TODO: Split from total games if needed
+            blitzGames7d: 0, // TODO: Split from total games if needed
+            rapidRating: latestStats?.rating_rapid ?? null,
+            blitzRating: latestStats?.rating_blitz ?? null,
+            puzzlesSolved24h: 0,
+            puzzleRating: latestStats?.puzzle_rating ?? null,
+            homeworkCompletionPct: 0,
+            lastActiveLabel: "—",
+          };
+        });
+
+        setStudents(mappedStudents);
+      } catch (err) {
+        console.error("Error loading students:", err);
+      }
+    }
+
+    fetchStudents();
+  }, []);
 
   const handleAdd = async () => {
     const trimmedNickname = nicknameInput.trim();
