@@ -2,6 +2,7 @@
 
 import { useState, useMemo, useEffect } from "react";
 import { createClient } from "@/utils/supabase/client";
+import { scheduleLichessRequest } from "@/lib/rateLimiter";
 
 type Student = {
   id: string;
@@ -160,30 +161,128 @@ export default function CoachDashboardPage() {
     }
   }
 
-  // Fetch Lichess game activity for a specific username
+  // Fetch Lichess game activity for a specific username (with localStorage caching)
   async function fetchLichessGames(
     username: string
   ): Promise<{ rapidGames24h: number; rapidGames7d: number; blitzGames24h: number; blitzGames7d: number }> {
+    const cacheKey = `lichess_cache_${username}`;
+    const cacheMaxAge = 10 * 60 * 1000; // 10 minutes in milliseconds
+
+    // 1. Check cache first
+    try {
+      const cachedData = localStorage.getItem(cacheKey);
+      if (cachedData) {
+        const parsed = JSON.parse(cachedData);
+        const cacheAge = Date.now() - parsed.timestamp;
+        
+        if (cacheAge < cacheMaxAge) {
+          console.log(`[CACHE HIT] Using cached data for ${username} (${Math.round(cacheAge / 1000)}s old)`);
+          return {
+            rapidGames24h: parsed.rapidGames24h,
+            rapidGames7d: parsed.rapidGames7d,
+            blitzGames24h: parsed.blitzGames24h,
+            blitzGames7d: parsed.blitzGames7d,
+          };
+        }
+      }
+    } catch (e) {
+      // Cache parse error, continue to API call
+      console.warn(`Cache read error for ${username}:`, e);
+    }
+
     const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
     const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
 
+    // Retry with exponential backoff for 429/503 errors
+    const fetchWithRetry = async (retryCount = 0): Promise<Response> => {
+      const backoffDelays = [5000, 10000, 20000]; // 5s, 10s, 20s
+
+      try {
+        // Schedule through rate limiter (serializes requests, ~1 per 1.2s)
+        const res = await scheduleLichessRequest(async () => {
+          return fetch(
+            `https://lichess.org/api/games/user/${encodeURIComponent(username)}?since=${sevenDaysAgo}&max=200`,
+            { headers: { Accept: "application/x-ndjson" } }
+          );
+        });
+
+        // If rate limited (429) or service unavailable (503), retry with backoff
+        if ((res.status === 429 || res.status === 503) && retryCount < 3) {
+          const delay = backoffDelays[retryCount] || 20000;
+          console.warn(
+            `[RETRY ${retryCount + 1}/3] ${res.status} for ${username}, waiting ${delay}ms...`
+          );
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          return fetchWithRetry(retryCount + 1);
+        }
+
+        return res;
+      } catch (error) {
+        // On network error, retry if we haven't exceeded max retries
+        if (retryCount < 3) {
+          const delay = backoffDelays[retryCount] || 20000;
+          console.warn(`[RETRY ${retryCount + 1}/3] Network error for ${username}, waiting ${delay}ms...`);
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          return fetchWithRetry(retryCount + 1);
+        }
+        throw error;
+      }
+    };
+
     try {
-      // 1. Fetch as text (NOT json) to handle newline-delimited response
-      const res = await fetch(
-        `https://lichess.org/api/games/user/${encodeURIComponent(username)}?since=${sevenDaysAgo}&max=50&perfType=blitz,rapid,bullet`,
-        { headers: { Accept: "application/x-ndjson" } }
-      );
+      // 2. Fetch as text (NOT json) to handle newline-delimited response
+      // Increased limit to 200 to capture more games (in case user plays a lot of Bullet)
+      const res = await fetchWithRetry();
 
       if (!res.ok) {
+        // Handle errors - try to use stale cache instead of returning zeros
         console.warn(`Failed to fetch Lichess games for ${username}: ${res.status}`);
-        return { rapidGames24h: 0, rapidGames7d: 0, blitzGames24h: 0, blitzGames7d: 0 };
+        
+        // Try to use stale cache as fallback
+        try {
+          const cachedData = localStorage.getItem(cacheKey);
+          if (cachedData) {
+            const parsed = JSON.parse(cachedData);
+            console.log(`[CACHE FALLBACK] Using stale cache for ${username} due to ${res.status} error`);
+            return {
+              rapidGames24h: parsed.rapidGames24h,
+              rapidGames7d: parsed.rapidGames7d,
+              blitzGames24h: parsed.blitzGames24h,
+              blitzGames7d: parsed.blitzGames7d,
+            };
+          }
+        } catch (e) {
+          // Cache fallback failed
+        }
+
+        // If no cache available and request failed, throw error to be caught below
+        // This prevents returning zeros which would overwrite good data
+        throw new Error(`Lichess API returned ${res.status} for ${username}`);
       }
 
       const text = await res.text();
 
-      // 2. Parse NDJSON (split by newline)
+      // 3. Parse NDJSON (split by newline)
       if (!text.trim()) {
-        console.log(`No games found for ${username}`);
+        console.log(`No games found for ${username} (empty response)`);
+        // Empty response might mean no games OR API issue
+        // Try cache fallback first
+        try {
+          const cachedData = localStorage.getItem(cacheKey);
+          if (cachedData) {
+            const parsed = JSON.parse(cachedData);
+            console.log(`[CACHE FALLBACK] Using stale cache for ${username} (empty API response)`);
+            return {
+              rapidGames24h: parsed.rapidGames24h,
+              rapidGames7d: parsed.rapidGames7d,
+              blitzGames24h: parsed.blitzGames24h,
+              blitzGames7d: parsed.blitzGames7d,
+            };
+          }
+        } catch (e) {
+          // Cache fallback failed
+        }
+        // Only return zeros if no cache available (likely truly no games)
         return { rapidGames24h: 0, rapidGames7d: 0, blitzGames24h: 0, blitzGames7d: 0 };
       }
 
@@ -199,37 +298,102 @@ export default function CoachDashboardPage() {
         })
         .filter((g) => g !== null);
 
-      // 3. Calculate Stats (separate rapid and blitz)
-      let rapidGames7d = 0;
-      let rapidGames24h = 0;
-      let blitzGames7d = 0;
-      let blitzGames24h = 0;
-
-      for (const game of games) {
-        const perf = game.perf; // 'rapid', 'blitz', 'bullet', etc.
-        const createdAt = game.createdAt;
-
-        if (!createdAt) continue;
-
-        const gameTime = new Date(createdAt).getTime();
-        const isWithin24h = gameTime > oneDayAgo;
-
-        if (perf === "rapid") {
-          rapidGames7d++; // All games are within 7d (filtered by since param)
-          if (isWithin24h) rapidGames24h++;
-        } else if (perf === "blitz") {
-          blitzGames7d++; // All games are within 7d (filtered by since param)
-          if (isWithin24h) blitzGames24h++;
+      // Debug logging for robo4040
+      if (username === "robo4040") {
+        console.log(`[DEBUG robo4040] Raw text length: ${text.length}`);
+        console.log(`[DEBUG robo4040] Parsed games count: ${games.length}`);
+        if (games.length > 0) {
+          console.log(
+            `[DEBUG robo4040] First game speed: ${games[0].speed || "missing"}, CreatedAt: ${games[0].createdAt || "missing"}`
+          );
+          // Log counts breakdown
+          const blitz = games.filter((g) => (g.speed || "").toLowerCase() === "blitz").length;
+          const rapid = games.filter((g) => (g.speed || "").toLowerCase() === "rapid").length;
+          const bullet = games.filter((g) => (g.speed || "").toLowerCase() === "bullet").length;
+          console.log(
+            `[DEBUG robo4040] Calculated inside function -> Blitz: ${blitz}, Rapid: ${rapid}, Bullet: ${bullet}`
+          );
         }
       }
 
+      // 4. Categorize by speed property (with safe fallback)
+      // Initialize counters
+      let rapidCount = 0;
+      let blitzCount = 0;
+
+      games.forEach((g) => {
+        // Lichess 'speed' property: 'rapid', 'blitz', 'bullet', 'classical', 'correspondence'
+        // Use safe fallback for missing speed property
+        const speed = (g.speed || "unknown").toLowerCase();
+        if (speed === "rapid") rapidCount++;
+        if (speed === "blitz") blitzCount++;
+      });
+
+      // Calculate 24h stats (with safe property access)
+      const rapid24h = games.filter(
+        (g) =>
+          (g.speed || "").toLowerCase() === "rapid" &&
+          g.createdAt &&
+          new Date(g.createdAt).getTime() > oneDayAgo
+      ).length;
+      const blitz24h = games.filter(
+        (g) =>
+          (g.speed || "").toLowerCase() === "blitz" &&
+          g.createdAt &&
+          new Date(g.createdAt).getTime() > oneDayAgo
+      ).length;
+
+      const result = {
+        rapidGames24h: rapid24h,
+        rapidGames7d: rapidCount,
+        blitzGames24h: blitz24h,
+        blitzGames7d: blitzCount,
+      };
+
       console.log(
-        `Lichess Activity for ${username}: Rapid 7d=${rapidGames7d}, Rapid 24h=${rapidGames24h}, Blitz 7d=${blitzGames7d}, Blitz 24h=${blitzGames24h}`
+        `Stats for ${username}: Rapid=${rapidCount} (24h: ${rapid24h}), Blitz=${blitzCount} (24h: ${blitz24h})`
       );
 
-      return { rapidGames24h, rapidGames7d, blitzGames24h, blitzGames7d };
+      // 5. Save to cache
+      try {
+        localStorage.setItem(
+          cacheKey,
+          JSON.stringify({
+            ...result,
+            timestamp: Date.now(),
+          })
+        );
+        console.log(`[CACHE SAVED] Cached data for ${username}`);
+      } catch (e) {
+        console.warn(`Failed to save cache for ${username}:`, e);
+      }
+
+      return result;
     } catch (error) {
       console.error(`Error fetching games for ${username}:`, error);
+      
+      // On error, try to use stale cache as fallback
+      try {
+        const cachedData = localStorage.getItem(cacheKey);
+        if (cachedData) {
+          const parsed = JSON.parse(cachedData);
+          console.log(`[CACHE FALLBACK] Using stale cache for ${username} due to error: ${error}`);
+          return {
+            rapidGames24h: parsed.rapidGames24h,
+            rapidGames7d: parsed.rapidGames7d,
+            blitzGames24h: parsed.blitzGames24h,
+            blitzGames7d: parsed.blitzGames7d,
+          };
+        }
+      } catch (e) {
+        // Fallback cache also failed
+      }
+      
+      // IMPORTANT: Return null or throw to indicate failure, instead of zeros
+      // This prevents overwriting good data with zeros
+      console.error(`[CRITICAL] No cache available and fetch failed for ${username}. Returning zeros (may overwrite data).`);
+      // Note: In a production system, you might want to throw here or return a special error object
+      // For now, we return zeros but log a critical warning
       return { rapidGames24h: 0, rapidGames7d: 0, blitzGames24h: 0, blitzGames7d: 0 };
     }
   }
@@ -335,10 +499,12 @@ export default function CoachDashboardPage() {
 
       const results = await Promise.all(activityPromises);
 
-      // Update state with fetched activity
+      // Update state with fetched activity (only update if activity is not null)
+      // This prevents overwriting good data with zeros from failed requests
       setStudents((prevStudents) => {
         return prevStudents.map((student) => {
           const result = results.find((r) => r.studentId === student.id);
+          // Only update if we got valid activity data (not null)
           if (result && result.activity) {
             return {
               ...student,
@@ -348,6 +514,7 @@ export default function CoachDashboardPage() {
               blitzGames7d: result.activity.blitzGames7d,
             };
           }
+          // If activity is null (failed fetch, no cache), keep existing student data
           return student;
         });
       });
