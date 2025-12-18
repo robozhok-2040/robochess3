@@ -39,6 +39,7 @@ type SortKey =
 
 export default function CoachDashboardPage() {
   const [students, setStudents] = useState<Student[]>([]);
+  const [hiddenIds, setHiddenIds] = useState<string[]>([]);
   const [nicknameInput, setNicknameInput] = useState("");
   const [isAdding, setIsAdding] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -652,14 +653,9 @@ export default function CoachDashboardPage() {
     }
   };
 
-  const handleClearTable = () => {
-    setStudents([]);
-    setErrorMsg(null);
-  };
-
-  // Hide student (temporary removal from view, local state only)
+  // Hide student (temporary removal from view using hiddenIds filter)
   const handleHide = (id: string) => {
-    setStudents(students.filter((student) => student.id !== id));
+    setHiddenIds((prev) => [...prev, id]);
   };
 
   // Delete student permanently from database
@@ -699,8 +695,11 @@ export default function CoachDashboardPage() {
     }
   };
 
+  // Filter out hidden students
+  const displayedStudents = students.filter((s) => !hiddenIds.includes(s.id));
+
   const sortedStudents = useMemo(() => {
-    const sorted = [...students];
+    const sorted = [...displayedStudents];
 
     if (sortKey === "index") {
       // Keep insertion order (already sorted)
@@ -790,7 +789,7 @@ export default function CoachDashboardPage() {
     });
 
     return sorted;
-  }, [students, sortKey, sortDir]);
+  }, [displayedStudents, sortKey, sortDir]);
 
   return (
     <div>
@@ -828,12 +827,15 @@ export default function CoachDashboardPage() {
           >
             Add
           </button>
-          <button
-            onClick={handleClearTable}
-            className="px-4 py-2 border rounded-md text-sm font-semibold hover:bg-gray-50"
-          >
-            Clear table
-          </button>
+          {hiddenIds.length > 0 && (
+            <button
+              onClick={() => setHiddenIds([])}
+              className="px-4 py-2 border rounded-md text-sm font-semibold hover:bg-gray-50"
+              title="Показати всіх прихованих учнів"
+            >
+              👁️ Показати всіх
+            </button>
+          )}
         </div>
       </div>
 
