@@ -46,6 +46,7 @@ export default function CoachDashboardPage() {
   const [nicknameInput, setNicknameInput] = useState("");
   const [isAdding, setIsAdding] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [isUpdatingStats, setIsUpdatingStats] = useState(false);
   const [sortKey, setSortKey] = useState<SortKey>("index");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
 
@@ -943,6 +944,32 @@ export default function CoachDashboardPage() {
     }
   };
 
+  const handleUpdateStats = async () => {
+    setIsUpdatingStats(true);
+    try {
+      const response = await fetch("/api/cron/update-stats");
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: "Unknown error" }));
+        throw new Error(errorData.error || `HTTP ${response.status}`);
+      }
+
+      const result = await response.json();
+      console.log("Stats update completed:", result);
+
+      // Show success message
+      alert(`Stats updated successfully! Processed ${result.processed || 0} students.`);
+
+      // Reload the page to show updated data
+      window.location.reload();
+    } catch (error) {
+      console.error("Error updating stats:", error);
+      alert(`Failed to update stats: ${error instanceof Error ? error.message : "Unknown error"}`);
+    } finally {
+      setIsUpdatingStats(false);
+    }
+  };
+
   const handleSort = (key: SortKey) => {
     if (sortKey === key) {
       setSortDir(sortDir === "asc" ? "desc" : "asc");
@@ -1054,7 +1081,16 @@ export default function CoachDashboardPage() {
 
   return (
     <div>
-      <h1 className="text-2xl font-bold mb-6">Coach Dashboard</h1>
+      <div className="flex items-center justify-between mb-6">
+        <h1 className="text-2xl font-bold">Coach Dashboard</h1>
+        <button
+          onClick={handleUpdateStats}
+          disabled={isUpdatingStats}
+          className="px-4 py-2 border border-gray-300 rounded-md text-sm font-semibold hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {isUpdatingStats ? "Updating..." : "Update Stats"}
+        </button>
+      </div>
 
       <div className="mb-6 p-4 border rounded-lg bg-white">
         <div className="flex gap-3 items-end">
