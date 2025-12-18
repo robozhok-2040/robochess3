@@ -3,6 +3,7 @@
 import { useState, useMemo, useEffect } from "react";
 import { createClient } from "@/utils/supabase/client";
 import { scheduleLichessRequest } from "@/lib/rateLimiter";
+import { EyeOff, Trash2 } from "lucide-react";
 
 type Student = {
   id: string;
@@ -656,8 +657,37 @@ export default function CoachDashboardPage() {
     setErrorMsg(null);
   };
 
-  const handleDelete = (id: string) => {
+  // Hide student (temporary removal from view, local state only)
+  const handleHide = (id: string) => {
     setStudents(students.filter((student) => student.id !== id));
+  };
+
+  // Delete student permanently from database
+  const handleDelete = async (id: string) => {
+    if (!confirm("Ви точно хочете видалити цього учня з Бази Даних назавжди?")) {
+      return;
+    }
+
+    try {
+      const supabase = createClient();
+
+      // 1. Delete from Supabase (profiles table)
+      // Note: This should cascade delete related records (platform_connections, stats_snapshots)
+      // if foreign key constraints are set up properly
+      const { error } = await supabase.from("profiles").delete().eq("id", id);
+
+      if (error) {
+        throw error;
+      }
+
+      // 2. Remove from local UI (only if DB delete worked)
+      setStudents((prev) => prev.filter((student) => student.id !== id));
+
+      console.log(`Successfully deleted student ${id} from database`);
+    } catch (err) {
+      console.error("Error deleting student:", err);
+      alert("Помилка видалення! Перевірте консоль.");
+    }
   };
 
   const handleSort = (key: SortKey) => {
@@ -991,12 +1021,22 @@ export default function CoachDashboardPage() {
                   {student.lastActiveLabel}
                 </td>
                 <td className="border border-gray-300 px-3 py-2 text-center">
-                  <button
-                    onClick={() => handleDelete(student.id)}
-                    className="text-red-600 hover:text-red-800 hover:underline text-xs"
-                  >
-                    Delete
-                  </button>
+                  <div className="flex items-center justify-center gap-2">
+                    <button
+                      onClick={() => handleHide(student.id)}
+                      title="Приховати"
+                      className="text-gray-500 hover:text-gray-700 hover:bg-gray-100 p-1 rounded transition-colors"
+                    >
+                      <EyeOff size={16} />
+                    </button>
+                    <button
+                      onClick={() => handleDelete(student.id)}
+                      title="Видалити з бази"
+                      className="text-red-500 hover:text-red-700 hover:bg-red-50 p-1 rounded transition-colors"
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
                 </td>
               </tr>
             ))}
