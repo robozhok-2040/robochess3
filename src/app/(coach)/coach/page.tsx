@@ -19,7 +19,9 @@ type Student = {
   puzzlesSolved24h: number;
   puzzleRating: number | null;
   homeworkCompletionPct: number;
-  lastActiveLabel: string;
+  seenAt: number | null; // Timestamp in milliseconds from Lichess API
+  puzzleDelta3d: number | null; // Difference from 3 days ago
+  puzzleDelta7d: number | null; // Difference from 7 days ago
 };
 
 type SortKey =
@@ -32,7 +34,8 @@ type SortKey =
   | "blitz7d"
   | "rapidRating"
   | "blitzRating"
-  | "puzzles24h"
+  | "puzzleDelta3d"
+  | "puzzleDelta7d"
   | "puzzleRating"
   | "homeworkPct"
   | "lastActive";
@@ -45,6 +48,45 @@ export default function CoachDashboardPage() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [sortKey, setSortKey] = useState<SortKey>("index");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+
+  // Helper function to format relative time and determine traffic light color
+  function formatLastActive(seenAt: number | null): { label: string; color: string } {
+    if (seenAt === null || seenAt === undefined) {
+      return { label: "—", color: "gray" };
+    }
+
+    const now = Date.now();
+    const diffMs = now - seenAt;
+    const diffHours = diffMs / (1000 * 60 * 60);
+    const diffDays = diffMs / (1000 * 60 * 60 * 24);
+
+    let label: string;
+    let color: string;
+
+    if (diffHours < 24) {
+      // Within 24 hours - Green
+      color = "green";
+      if (diffHours < 1) {
+        const minutes = Math.floor(diffMs / (1000 * 60));
+        label = `${minutes}m`;
+      } else {
+        const hours = Math.floor(diffHours);
+        label = `${hours}h`;
+      }
+    } else if (diffDays < 5) {
+      // Between 24 hours and 5 days - Yellow
+      color = "yellow";
+      const days = Math.floor(diffDays);
+      label = `${days}d`;
+    } else {
+      // Older than 5 days - Red
+      color = "red";
+      const days = Math.floor(diffDays);
+      label = `${days}d`;
+    }
+
+    return { label, color };
+  }
 
   // Update student stats from live APIs
   async function updateStudentStats(studentsList: Student[]) {
@@ -87,6 +129,7 @@ export default function CoachDashboardPage() {
               rapidRating: data.perfs?.rapid?.rating || null,
               blitzRating: data.perfs?.blitz?.rating || null,
               puzzleRating: data.perfs?.puzzle?.rating || null,
+              seenAt: data.seenAt || null, // Timestamp in milliseconds
             };
 
               console.log(`✅ Lichess stats fetched for ${student.handle}:`, updates);
@@ -153,6 +196,7 @@ export default function CoachDashboardPage() {
               rapidRating: result.updates.rapidRating ?? student.rapidRating,
               blitzRating: result.updates.blitzRating ?? student.blitzRating,
               puzzleRating: result.updates.puzzleRating ?? student.puzzleRating,
+              seenAt: result.updates.seenAt ?? student.seenAt,
             };
           }
           return student;
@@ -400,6 +444,159 @@ export default function CoachDashboardPage() {
     }
   }
 
+  // Fetch Lichess puzzle stats (total puzzles solved)
+  async function fetchLichessPuzzleStats(username: string): Promise<number> {
+    console.log(`[PUZZLES] fetchLichessPuzzleStats called for: ${username}`);
+    const cacheKey = `lichess_puzzles_total_v1_${username}`;
+    const cacheMaxAge = 15 * 60 * 1000; // 15 minutes in milliseconds
+
+    // 1. Check cache first
+    try {
+      const cachedData = localStorage.getItem(cacheKey);
+      if (cachedData) {
+        const parsed = JSON.parse(cachedData);
+        const cacheAge = Date.now() - parsed.timestamp;
+
+        if (cacheAge < cacheMaxAge) {
+          console.log(
+            `[PUZZLES CACHE HIT] Using cached puzzle data for ${username} (${Math.round(cacheAge / 1000)}s old)`
+          );
+          return parsed.puzzlesTotal;
+        }
+      }
+    } catch (e) {
+      // Cache parse error, continue to API call
+      console.warn(`Puzzle cache read error for ${username}:`, e);
+    }
+
+    try {
+      // 2. Fetch user profile from Lichess API (public endpoint)
+      const res = await scheduleLichessRequest(async () => {
+        return fetch(`https://lichess.org/api/user/${encodeURIComponent(username)}`);
+      });
+
+      if (!res.ok) {
+        console.warn(`Failed to fetch Lichess profile for ${username}: ${res.status}`);
+        // Try stale cache on error
+        try {
+          const cachedData = localStorage.getItem(cacheKey);
+          if (cachedData) {
+            const parsed = JSON.parse(cachedData);
+            console.log(`[PUZZLES CACHE FALLBACK] Using stale cache for ${username} due to ${res.status}`);
+            return parsed.puzzlesTotal;
+          }
+        } catch (e) {
+          // Cache fallback failed
+        }
+        return 0;
+      }
+
+      const data = await res.json();
+
+      // 3. Extract total puzzles solved from perfs.puzzle.games
+      const puzzlesTotal = data?.perfs?.puzzle?.games ?? 0;
+
+      console.log(`[PUZZLES] Found ${puzzlesTotal} total puzzles for ${username}`);
+
+      // 4. Save to cache
+      try {
+        localStorage.setItem(
+          cacheKey,
+          JSON.stringify({
+            puzzlesTotal,
+            timestamp: Date.now(),
+          })
+        );
+        console.log(`[PUZZLES CACHE SAVED] Cached puzzle data for ${username}: ${puzzlesTotal} total puzzles`);
+      } catch (e) {
+        console.warn(`Failed to save puzzle cache for ${username}:`, e);
+      }
+
+      return puzzlesTotal;
+    } catch (error) {
+      console.error(`Error fetching puzzle stats for ${username}:`, error);
+
+      // Try stale cache on error
+      try {
+        const cachedData = localStorage.getItem(cacheKey);
+        if (cachedData) {
+          const parsed = JSON.parse(cachedData);
+          console.log(`[PUZZLES CACHE FALLBACK] Using stale cache for ${username} due to error`);
+          return parsed.puzzlesTotal;
+        }
+      } catch (e) {
+        // Cache fallback failed
+      }
+
+      return 0;
+    }
+  }
+
+  // Fetch puzzle stats for all students
+  async function fetchPuzzleStats(studentsList: Student[]) {
+    if (studentsList.length === 0) {
+      console.log("[PUZZLES] No students to fetch puzzle stats for");
+      return;
+    }
+
+    console.log(`[PUZZLES] Starting puzzle stats fetch for ${studentsList.length} students`);
+
+    try {
+      // Fetch puzzle stats for Lichess students in parallel
+      const lichessStudents = studentsList.filter((s) => s.platform === "lichess" && s.handle);
+      console.log(`[PUZZLES] Found ${lichessStudents.length} Lichess students to fetch`);
+
+      const puzzlePromises = lichessStudents.map(async (student) => {
+        console.log(`[PUZZLES] Fetching puzzles for: ${student.handle} (id: ${student.id})`);
+        try {
+          const puzzlesTotal = await fetchLichessPuzzleStats(student.handle);
+          console.log(`[PUZZLES] Got ${puzzlesTotal} puzzles for ${student.handle}`);
+
+          return { studentId: student.id, puzzles24h: puzzlesTotal };
+        } catch (error) {
+          console.warn(`[PUZZLES] Error fetching puzzle stats for ${student.handle}:`, error);
+          return { studentId: student.id, puzzles24h: null };
+        }
+      });
+
+      const results = await Promise.all(puzzlePromises);
+      console.log(`[PUZZLES] Puzzle stats fetch complete. Results:`, results);
+
+      // Update state with fetched puzzle stats and recalculate deltas
+      setStudents((prevStudents) => {
+        const updated = prevStudents.map((student) => {
+          const result = results.find((r) => r.studentId === student.id);
+          if (result && result.puzzles24h !== null) {
+            console.log(`[PUZZLES] Updating student ${student.id} with ${result.puzzles24h} puzzles`);
+            
+            // Recalculate deltas based on new puzzle total
+            // Delta = newCurrent - oldSnapshot, where oldSnapshot = oldCurrent - oldDelta
+            const oldCurrent = student.puzzlesSolved24h;
+            const newCurrent = result.puzzles24h;
+            const deltaChange = newCurrent - oldCurrent;
+            
+            // Recalculate deltas: newDelta = oldDelta + (newCurrent - oldCurrent)
+            const newDelta3d = student.puzzleDelta3d !== null ? student.puzzleDelta3d + deltaChange : null;
+            const newDelta7d = student.puzzleDelta7d !== null ? student.puzzleDelta7d + deltaChange : null;
+            
+            return {
+              ...student,
+              puzzlesSolved24h: result.puzzles24h,
+              puzzleDelta3d: newDelta3d,
+              puzzleDelta7d: newDelta7d,
+            };
+          }
+          return student;
+        });
+        console.log(`[PUZZLES] State update complete. Updated ${results.filter(r => r.puzzles24h !== null).length} students`);
+        
+        return updated;
+      });
+    } catch (error) {
+      console.error("Error fetching puzzle stats:", error);
+    }
+  }
+
   // Fetch recent game activity (last 7 days and 24 hours)
   async function fetchRecentActivity(studentsList: Student[]) {
     if (studentsList.length === 0) return;
@@ -542,6 +739,34 @@ export default function CoachDashboardPage() {
 
         if (!data) return;
 
+        // Helper function to find closest snapshot to a target date
+        const findClosestSnapshot = (snapshots: any[], targetDaysAgo: number) => {
+          if (!snapshots || snapshots.length === 0) return null;
+
+          const targetDate = new Date();
+          targetDate.setDate(targetDate.getDate() - targetDaysAgo);
+          targetDate.setHours(0, 0, 0, 0);
+          const targetTime = targetDate.getTime();
+
+          // Find snapshot closest to target date
+          let closest: any = null;
+          let minDiff = Infinity;
+
+          for (const snapshot of snapshots) {
+            if (!snapshot.created_at) continue;
+            const snapshotTime = new Date(snapshot.created_at).getTime();
+            const diff = Math.abs(snapshotTime - targetTime);
+            if (diff < minDiff) {
+              minDiff = diff;
+              closest = snapshot;
+            }
+          }
+
+          // Only return if snapshot is within 2 days of target (to avoid using very old data)
+          const maxAllowedDiff = 2 * 24 * 60 * 60 * 1000; // 2 days in ms
+          return minDiff <= maxAllowedDiff ? closest : null;
+        };
+
         // Map DB results to Student type
         const mappedStudents: Student[] = data.map((profile: any) => {
           // Get platform connection (use first one, default to lichess)
@@ -549,15 +774,31 @@ export default function CoachDashboardPage() {
           const platform = (platformConn?.platform || "lichess") as "lichess" | "chesscom";
           const handle = platformConn?.platform_username || profile.full_name || profile.name || "";
 
-          // Get latest stats snapshot (sort by created_at desc)
-          const statsSnapshots = profile.stats_snapshots || [];
-          const latestStats = statsSnapshots.length > 0
-            ? [...statsSnapshots].sort((a: any, b: any) => {
-                const dateA = a.created_at ? new Date(a.created_at).getTime() : 0;
-                const dateB = b.created_at ? new Date(b.created_at).getTime() : 0;
-                return dateB - dateA;
-              })[0]
-            : null;
+          // Get all stats snapshots (sorted by created_at desc)
+          const statsSnapshots = (profile.stats_snapshots || []).sort((a: any, b: any) => {
+            const dateA = a.created_at ? new Date(a.created_at).getTime() : 0;
+            const dateB = b.created_at ? new Date(b.created_at).getTime() : 0;
+            return dateB - dateA;
+          });
+
+          const latestStats = statsSnapshots.length > 0 ? statsSnapshots[0] : null;
+
+          // Get current puzzle_total from latest snapshot (will be updated with live data later)
+          const currentPuzzleTotal = latestStats?.puzzle_total ?? 0;
+
+          // Find snapshots from 3 and 7 days ago
+          const snapshot3d = findClosestSnapshot(statsSnapshots, 3);
+          const snapshot7d = findClosestSnapshot(statsSnapshots, 7);
+
+          // Calculate deltas (null if snapshot not found)
+          const puzzleDelta3d =
+            snapshot3d && snapshot3d.puzzle_total !== null && snapshot3d.puzzle_total !== undefined
+              ? currentPuzzleTotal - snapshot3d.puzzle_total
+              : null;
+          const puzzleDelta7d =
+            snapshot7d && snapshot7d.puzzle_total !== null && snapshot7d.puzzle_total !== undefined
+              ? currentPuzzleTotal - snapshot7d.puzzle_total
+              : null;
 
           return {
             id: profile.id,
@@ -570,10 +811,12 @@ export default function CoachDashboardPage() {
             blitzGames7d: 0, // TODO: Split from total games if needed
             rapidRating: latestStats?.rating_rapid ?? null,
             blitzRating: latestStats?.rating_blitz ?? null,
-            puzzlesSolved24h: 0,
+            puzzlesSolved24h: currentPuzzleTotal, // Will be updated with live data
             puzzleRating: latestStats?.puzzle_rating ?? null,
             homeworkCompletionPct: 0,
-            lastActiveLabel: "—",
+            seenAt: null, // Will be updated from live API
+            puzzleDelta3d,
+            puzzleDelta7d,
           };
         });
 
@@ -582,8 +825,11 @@ export default function CoachDashboardPage() {
         // Trigger stats update after students are loaded
         await updateStudentStats(mappedStudents);
         
-        // Fetch recent activity after stats are loaded
-        await fetchRecentActivity(mappedStudents);
+        // Fetch recent activity and puzzle stats in parallel (both are independent)
+        await Promise.all([
+          fetchRecentActivity(mappedStudents),
+          fetchPuzzleStats(mappedStudents),
+        ]);
       } catch (err) {
         console.error("Error loading students:", err);
       }
@@ -612,7 +858,15 @@ export default function CoachDashboardPage() {
 
       if (response.ok) {
         const data = await response.json();
-        const newRows: Student[] = data.rows || [];
+        const apiRows = data.rows || [];
+        
+        // Map API rows to Student type, initializing delta fields to null (no history yet)
+        const newRows: Student[] = apiRows.map((row: any) => ({
+          ...row,
+          puzzleDelta3d: null,
+          puzzleDelta7d: null,
+          seenAt: null, // Will be updated when stats are fetched
+        }));
         
         // Filter out duplicates by (platform + handle) case-insensitive
         const filteredRows = newRows.filter((row) => {
@@ -641,6 +895,9 @@ export default function CoachDashboardPage() {
 
           // Update stats for all students (including newly added ones)
           updateStudentStats(updatedStudents);
+          
+          // Fetch puzzle stats for newly added students
+          fetchPuzzleStats(updatedStudents);
         }
       } else {
         const errorData = await response.json();
@@ -746,9 +1003,13 @@ export default function CoachDashboardPage() {
           aVal = a.blitzRating;
           bVal = b.blitzRating;
           break;
-        case "puzzles24h":
-          aVal = a.puzzlesSolved24h;
-          bVal = b.puzzlesSolved24h;
+        case "puzzleDelta3d":
+          aVal = a.puzzleDelta3d;
+          bVal = b.puzzleDelta3d;
+          break;
+        case "puzzleDelta7d":
+          aVal = a.puzzleDelta7d;
+          bVal = b.puzzleDelta7d;
           break;
         case "puzzleRating":
           aVal = a.puzzleRating;
@@ -759,9 +1020,9 @@ export default function CoachDashboardPage() {
           bVal = b.homeworkCompletionPct;
           break;
         case "lastActive":
-          aVal = (a.lastActiveLabel || "").toLowerCase();
-          bVal = (b.lastActiveLabel || "").toLowerCase();
-          isString = true;
+          // Sort by seenAt timestamp (higher = more recent)
+          aVal = a.seenAt ?? 0;
+          bVal = b.seenAt ?? 0;
           break;
         default:
           return 0;
@@ -935,9 +1196,19 @@ export default function CoachDashboardPage() {
               </th>
               <th
                 className="border border-gray-300 px-3 py-2 text-center font-semibold cursor-pointer hover:bg-gray-100"
-                onClick={() => handleSort("puzzles24h")}
+                onClick={() => handleSort("puzzleDelta3d")}
               >
-                Puzzles 24h{sortKey === "puzzles24h" && (
+                Puzzles (3d){sortKey === "puzzleDelta3d" && (
+                  <span className="ml-1 text-xs">
+                    {sortDir === "asc" ? "▲" : "▼"}
+                  </span>
+                )}
+              </th>
+              <th
+                className="border border-gray-300 px-3 py-2 text-center font-semibold cursor-pointer hover:bg-gray-100"
+                onClick={() => handleSort("puzzleDelta7d")}
+              >
+                Puzzles (7d){sortKey === "puzzleDelta7d" && (
                   <span className="ml-1 text-xs">
                     {sortDir === "asc" ? "▲" : "▼"}
                   </span>
@@ -988,9 +1259,7 @@ export default function CoachDashboardPage() {
                   {student.nickname}
                 </td>
                 <td className="border border-gray-300 px-3 py-2">
-                  {student.platform === "lichess"
-                    ? `Lichess: ${student.handle}`
-                    : `Chess.com: ${student.handle}`}
+                  {student.platform === "lichess" ? "Lichess" : "Chess.com"}
                 </td>
                 <td className="border border-gray-300 px-3 py-2 text-right">
                   {student.rapidGames24h}
@@ -1011,7 +1280,22 @@ export default function CoachDashboardPage() {
                   {student.blitzRating !== null ? student.blitzRating : "—"}
                 </td>
                 <td className="border border-gray-300 px-3 py-2 text-right">
-                  {student.puzzlesSolved24h}
+                  {student.puzzleDelta3d !== null ? (
+                    <span className={student.puzzleDelta3d > 0 ? "text-green-600 font-semibold" : ""}>
+                      {student.puzzleDelta3d > 0 ? "+" : ""}{student.puzzleDelta3d}
+                    </span>
+                  ) : (
+                    "—"
+                  )}
+                </td>
+                <td className="border border-gray-300 px-3 py-2 text-right">
+                  {student.puzzleDelta7d !== null ? (
+                    <span className={student.puzzleDelta7d > 0 ? "text-green-600 font-semibold" : ""}>
+                      {student.puzzleDelta7d > 0 ? "+" : ""}{student.puzzleDelta7d}
+                    </span>
+                  ) : (
+                    "—"
+                  )}
                 </td>
                 <td className="border border-gray-300 px-3 py-2 text-right">
                   {student.puzzleRating !== null ? student.puzzleRating : "—"}
@@ -1020,7 +1304,24 @@ export default function CoachDashboardPage() {
                   {student.homeworkCompletionPct}%
                 </td>
                 <td className="border border-gray-300 px-3 py-2">
-                  {student.lastActiveLabel}
+                  {(() => {
+                    const { label, color } = formatLastActive(student.seenAt);
+                    if (student.seenAt === null) {
+                      return <span className="text-gray-400">—</span>;
+                    }
+                    const dotColorClass =
+                      color === "green"
+                        ? "bg-green-500"
+                        : color === "yellow"
+                        ? "bg-yellow-500"
+                        : "bg-red-500";
+                    return (
+                      <div className="flex items-center gap-2">
+                        <span className={`w-2 h-2 rounded-full ${dotColorClass}`}></span>
+                        <span>{label}</span>
+                      </div>
+                    );
+                  })()}
                 </td>
                 <td className="border border-gray-300 px-3 py-2 text-center">
                   <div className="flex items-center justify-center gap-2">
