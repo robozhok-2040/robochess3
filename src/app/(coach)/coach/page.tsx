@@ -3,7 +3,10 @@
 import { useState, useMemo, useEffect } from "react";
 import { createClient } from "@/utils/supabase/client";
 import { scheduleLichessRequest } from "@/lib/rateLimiter";
-import { EyeOff, Trash2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
 
 type Student = {
   id: string;
@@ -47,7 +50,7 @@ export default function CoachDashboardPage() {
   const [isAdding, setIsAdding] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isUpdatingStats, setIsUpdatingStats] = useState(false);
-  const [sortKey, setSortKey] = useState<SortKey>("index");
+  const [sortKey, setSortKey] = useState<SortKey>("nickname");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
 
   // Helper function to format relative time and determine traffic light color
@@ -87,6 +90,42 @@ export default function CoachDashboardPage() {
     }
 
     return { label, color };
+  }
+
+  // Helper to parse last active label and return badge variant
+  function parseLastActive(seenAt: number | null): { label: string; variant: "success" | "warning" | "muted" } {
+    if (seenAt === null) {
+      return { label: "No data", variant: "muted" };
+    }
+
+    const now = Date.now();
+    const diffMs = now - seenAt;
+    const diffHours = diffMs / (1000 * 60 * 60);
+    const diffDays = diffMs / (1000 * 60 * 60 * 24);
+
+    let label: string;
+    let variant: "success" | "warning" | "muted";
+
+    if (diffHours < 24) {
+      variant = "success";
+      if (diffHours < 1) {
+        const minutes = Math.floor(diffMs / (1000 * 60));
+        label = `${minutes}m`;
+      } else {
+        const hours = Math.floor(diffHours);
+        label = `${hours}h`;
+      }
+    } else if (diffDays <= 7) {
+      variant = "warning";
+      const days = Math.floor(diffDays);
+      label = `${days}d`;
+    } else {
+      variant = "muted";
+      const days = Math.floor(diffDays);
+      label = `${days}d`;
+    }
+
+    return { label, variant };
   }
 
   // Update student stats from live APIs
@@ -916,6 +955,11 @@ export default function CoachDashboardPage() {
     setHiddenIds((prev) => [...prev, id]);
   };
 
+  // Show all hidden students
+  const handleShowAllStudents = () => {
+    setHiddenIds([]);
+  };
+
   // Delete student permanently from database
   const handleDelete = async (id: string) => {
     if (!confirm("Ви точно хочете видалити цього учня з Бази Даних назавжди?")) {
@@ -985,10 +1029,7 @@ export default function CoachDashboardPage() {
   const sortedStudents = useMemo(() => {
     const sorted = [...displayedStudents];
 
-    if (sortKey === "index") {
-      // Keep insertion order (already sorted)
-      return sortDir === "asc" ? sorted : sorted.reverse();
-    }
+    // No special case for "index" - just sort normally
 
     sorted.sort((a, b) => {
       let aVal: any;
@@ -1047,9 +1088,11 @@ export default function CoachDashboardPage() {
           bVal = b.homeworkCompletionPct;
           break;
         case "lastActive":
-          // Sort by seenAt timestamp (higher = more recent)
-          aVal = a.seenAt ?? 0;
-          bVal = b.seenAt ?? 0;
+          // Sort by minutes since last active (lower = more recent)
+          // Missing/null treated as very large (inactive)
+          const now = Date.now();
+          aVal = a.seenAt !== null ? (now - a.seenAt) / (1000 * 60) : Infinity;
+          bVal = b.seenAt !== null ? (now - b.seenAt) / (1000 * 60) : Infinity;
           break;
         default:
           return 0;
@@ -1079,318 +1122,411 @@ export default function CoachDashboardPage() {
     return sorted;
   }, [displayedStudents, sortKey, sortDir]);
 
+  // Compute KPI metrics from sortedStudents
+  const kpiMetrics = useMemo(() => {
+    const total = sortedStudents.length;
+
+    // Count active students (seen within last 24 hours)
+    const now = Date.now();
+    const active24h = sortedStudents.filter((student) => {
+      if (student.seenAt === null) return false;
+      const diffHours = (now - student.seenAt) / (1000 * 60 * 60);
+      return diffHours < 24;
+    }).length;
+
+    // Calculate average Rapid rating
+    const rapidRatings = sortedStudents
+      .map((s) => s.rapidRating)
+      .filter((r): r is number => r !== null);
+    const avgRapid =
+      rapidRatings.length > 0
+        ? Math.round(rapidRatings.reduce((sum, r) => sum + r, 0) / rapidRatings.length)
+        : null;
+
+    // Calculate average Blitz rating
+    const blitzRatings = sortedStudents
+      .map((s) => s.blitzRating)
+      .filter((r): r is number => r !== null);
+    const avgBlitz =
+      blitzRatings.length > 0
+        ? Math.round(blitzRatings.reduce((sum, r) => sum + r, 0) / blitzRatings.length)
+        : null;
+
+    // Calculate total Rapid games (24h)
+    const rapidGames24h = sortedStudents.reduce((acc, s) => acc + (s.rapidGames24h ?? 0), 0);
+
+    // Calculate total Blitz games (24h)
+    const blitzGames24h = sortedStudents.reduce((acc, s) => acc + (s.blitzGames24h ?? 0), 0);
+
+    return { total, active24h, avgRapid, avgBlitz, rapidGames24h, blitzGames24h };
+  }, [sortedStudents]);
+
   return (
-    <div className="max-w-[1200px] mx-auto px-6 py-8 space-y-6">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-        <div>
-          <h1 className="text-3xl font-bold text-[hsl(var(--foreground))]">Coach Dashboard</h1>
-          <p className="text-sm text-[hsl(var(--muted-foreground))] mt-1">
-            Manage your students and track their progress
-          </p>
-        </div>
-        <button
-          onClick={handleUpdateStats}
-          disabled={isUpdatingStats}
-          className="h-10 px-4 rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] text-[hsl(var(--foreground))] text-sm font-medium hover:bg-[hsl(var(--muted))] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          {isUpdatingStats ? "Updating..." : "Update Stats"}
-        </button>
-      </div>
+    <div className="max-w-[1600px] mx-auto min-w-0">
+      {/* Header with KPI strip */}
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between mt-4 mb-4">
+        <h1 className="text-4xl font-semibold leading-none text-[hsl(var(--foreground))]">Dashboard</h1>
 
-      {/* Add Student Card */}
-      <div className="rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-sm p-4">
-        <div className="flex gap-3 items-end">
-          <div className="flex-1">
-            <label className="block text-sm font-medium mb-1 text-[hsl(var(--foreground))]">
-              Nickname
-            </label>
-            <input
-              type="text"
-              value={nicknameInput}
-              onChange={(e) => {
-                setNicknameInput(e.target.value);
-                setErrorMsg(null);
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  handleAdd();
-                }
-              }}
-              className="w-full h-10 rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--background))] text-[hsl(var(--foreground))] placeholder:text-[hsl(var(--muted-foreground))] px-3 text-sm focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))] focus:ring-offset-2 focus:ring-offset-[hsl(var(--background))] transition-colors"
-              placeholder="Enter nickname"
-            />
-            {errorMsg && (
-              <p className="text-red-600 dark:text-red-400 text-xs mt-1">{errorMsg}</p>
-            )}
+        <div className="flex items-center gap-3">
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-6">
+            {/* Total Students */}
+            <Card className="px-4 py-2 min-w-[150px]">
+              <div className="text-xs font-medium text-[hsl(var(--muted-foreground))] mb-1">
+                Students
+              </div>
+              <div className="text-xl font-semibold tabular-nums text-[hsl(var(--foreground))]">
+                {kpiMetrics.total}
+              </div>
+              <p className="hidden xl:block text-xs text-[hsl(var(--muted-foreground))] mt-1">
+                Total tracked
+              </p>
+            </Card>
+
+            {/* Active 24h */}
+            <Card className="px-4 py-2 min-w-[150px]">
+              <div className="flex items-center justify-between mb-1">
+                <div className="text-xs font-medium text-[hsl(var(--muted-foreground))]">
+                  Active (24h)
+                </div>
+                <span className="text-[10px] font-medium text-green-600 dark:text-green-400 bg-green-50 dark:bg-green-950/30 px-1.5 py-0.5 rounded">
+                  LIVE
+                </span>
+              </div>
+              <div className="text-xl font-semibold tabular-nums text-[hsl(var(--foreground))]">
+                {kpiMetrics.active24h}
+              </div>
+              <p className="hidden xl:block text-xs text-[hsl(var(--muted-foreground))] mt-1">
+                Seen in last day
+              </p>
+            </Card>
+
+            {/* Average Rapid */}
+            <Card className="px-4 py-2 min-w-[150px]">
+              <div className="text-xs font-medium text-[hsl(var(--muted-foreground))] mb-1">
+                Avg Rapid
+              </div>
+              <div className="text-xl font-semibold tabular-nums text-[hsl(var(--foreground))]">
+                {kpiMetrics.avgRapid !== null
+                  ? new Intl.NumberFormat().format(kpiMetrics.avgRapid)
+                  : "—"}
+              </div>
+              <p className="hidden xl:block text-xs text-[hsl(var(--muted-foreground))] mt-1">
+                Across rated students
+              </p>
+            </Card>
+
+            {/* Average Blitz */}
+            <Card className="px-4 py-2 min-w-[150px]">
+              <div className="text-xs font-medium text-[hsl(var(--muted-foreground))] mb-1">
+                Avg Blitz
+              </div>
+              <div className="text-xl font-semibold tabular-nums text-[hsl(var(--foreground))]">
+                {kpiMetrics.avgBlitz !== null
+                  ? new Intl.NumberFormat().format(kpiMetrics.avgBlitz)
+                  : "—"}
+              </div>
+              <p className="hidden xl:block text-xs text-[hsl(var(--muted-foreground))] mt-1">
+                Across rated students
+              </p>
+            </Card>
+
+            {/* Rapid games (24h) */}
+            <Card className="px-4 py-2 min-w-[150px]">
+              <div className="text-xs font-medium text-[hsl(var(--muted-foreground))] mb-1">
+                Rapid games (24h)
+              </div>
+              <div className="text-xl font-semibold tabular-nums text-[hsl(var(--foreground))]">
+                {new Intl.NumberFormat().format(kpiMetrics.rapidGames24h)}
+              </div>
+              <p className="hidden xl:block text-xs text-[hsl(var(--muted-foreground))] mt-1">
+                All students
+              </p>
+            </Card>
+
+            {/* Blitz games (24h) */}
+            <Card className="px-4 py-2 min-w-[150px]">
+              <div className="text-xs font-medium text-[hsl(var(--muted-foreground))] mb-1">
+                Blitz games (24h)
+              </div>
+              <div className="text-xl font-semibold tabular-nums text-[hsl(var(--foreground))]">
+                {new Intl.NumberFormat().format(kpiMetrics.blitzGames24h)}
+              </div>
+              <p className="hidden xl:block text-xs text-[hsl(var(--muted-foreground))] mt-1">
+                All students
+              </p>
+            </Card>
           </div>
-          <button
-            onClick={handleAdd}
-            disabled={isAdding}
-            className="h-10 px-4 rounded-lg bg-[hsl(var(--primary))] text-[hsl(var(--primary-foreground))] text-sm font-medium hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+
+          {/* Update Stats Icon Button */}
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-9 w-9 rounded-full p-0"
+            title="Update stats"
+            onClick={handleUpdateStats}
+            disabled={isUpdatingStats}
+            aria-label="Update stats"
           >
-            Add
-          </button>
-          {hiddenIds.length > 0 && (
-            <button
-              onClick={() => setHiddenIds([])}
-              className="h-10 px-4 rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] text-[hsl(var(--foreground))] text-sm font-medium hover:bg-[hsl(var(--muted))] transition-colors"
-              title="Показати всіх прихованих учнів"
-            >
-              👁️ Показати всіх
-            </button>
-          )}
+            <span aria-hidden className="text-base leading-none">
+              {isUpdatingStats ? "⏳" : "↻"}
+            </span>
+          </Button>
         </div>
       </div>
 
-      {/* Table Card */}
-      <div className="rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] overflow-hidden shadow-sm">
-        <div className="overflow-x-auto">
-          <table className="w-full border-collapse text-sm">
-          <thead>
-            <tr className="bg-[hsl(var(--card))] border-b border-[hsl(var(--border))] sticky top-0">
-              <th
-                className="border-r border-[hsl(var(--border))] px-3 py-3 text-center text-sm font-semibold text-[hsl(var(--foreground))] cursor-pointer hover:bg-[hsl(var(--muted))] transition-colors"
-                onClick={() => handleSort("index")}
+      {/* Students Table - Full Width */}
+      <div className="min-w-0">
+        <Card>
+          <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between pb-3">
+            <div>
+              <CardTitle>Students</CardTitle>
+              <CardDescription className="hidden sm:block">Track progress and activity</CardDescription>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <div className="group flex items-center w-[200px] sm:w-[220px] focus-within:w-[320px] sm:focus-within:w-[420px] transition-[width] duration-200">
+                <Input
+                  type="text"
+                  value={nicknameInput}
+                  onChange={(e) => {
+                    setNicknameInput(e.target.value);
+                    setErrorMsg(null);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      handleAdd();
+                    }
+                  }}
+                  placeholder="Add nickname"
+                  className="h-9"
+                />
+              </div>
+              <Button
+                size="sm"
+                onClick={handleAdd}
+                disabled={isAdding || !nicknameInput.trim()}
               >
-                #{sortKey === "index" && (
-                  <span className="ml-1 text-xs">
-                    {sortDir === "asc" ? "▲" : "▼"}
-                  </span>
-                )}
+                Add
+              </Button>
+              {errorMsg && (
+                <span className="text-red-600 dark:text-red-400 text-xs whitespace-nowrap">
+                  {errorMsg}
+                </span>
+              )}
+            </div>
+          </CardHeader>
+        <CardContent className="p-0">
+          {/* Show all students banner */}
+          {hiddenIds.length > 0 && (
+            <div className="mb-3 flex items-center justify-between rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--muted))] px-3 py-2 text-sm mx-4 mt-4">
+              <div className="text-[hsl(var(--muted-foreground))]">
+                Some students are hidden
+              </div>
+              <Button variant="outline" size="sm" onClick={handleShowAllStudents}>
+                Show all students
+              </Button>
+            </div>
+          )}
+          <div className="overflow-x-auto tabular-nums">
+            <table className="w-full border-collapse text-sm">
+          <thead className="sticky top-0 z-10 bg-[hsl(var(--card))] backdrop-blur border-b border-[hsl(var(--border))]">
+            <tr>
+              <th className="border-r border-[hsl(var(--border))] px-3 py-2 text-center text-xs font-semibold text-[hsl(var(--foreground))] uppercase tracking-wide">
+                #
               </th>
               <th
-                className="border-r border-[hsl(var(--border))] px-3 py-3 text-left text-sm font-semibold text-[hsl(var(--foreground))] cursor-pointer hover:bg-[hsl(var(--muted))] transition-colors"
+                className="border-r border-[hsl(var(--border))] px-3 py-2 text-left text-xs font-semibold text-[hsl(var(--foreground))] uppercase tracking-wide cursor-pointer hover:bg-[hsl(var(--muted))] transition-colors"
                 onClick={() => handleSort("nickname")}
               >
-                Nickname{sortKey === "nickname" && (
-                  <span className="ml-1 text-xs">
-                    {sortDir === "asc" ? "▲" : "▼"}
-                  </span>
-                )}
+                <span className="inline-flex items-center">
+                  Nickname
+                  {sortKey === "nickname" && (
+                    <span className="ml-1.5 text-xs text-[hsl(var(--muted-foreground))]">
+                      {sortDir === "asc" ? "▲" : "▼"}
+                    </span>
+                  )}
+                </span>
+              </th>
+              <th className="border-r border-[hsl(var(--border))] px-3 py-2 text-left text-xs font-semibold text-[hsl(var(--foreground))] uppercase tracking-wide">
+                Platform
+              </th>
+              <th className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-xs font-semibold text-[hsl(var(--foreground))] uppercase tracking-wide">
+                Rapid 24h
+              </th>
+              <th className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-xs font-semibold text-[hsl(var(--foreground))] uppercase tracking-wide">
+                Rapid 7d
+              </th>
+              <th className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-xs font-semibold text-[hsl(var(--foreground))] uppercase tracking-wide">
+                Blitz 24h
+              </th>
+              <th className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-xs font-semibold text-[hsl(var(--foreground))] uppercase tracking-wide">
+                Blitz 7d
               </th>
               <th
-                className="border-r border-[hsl(var(--border))] px-3 py-3 text-left text-sm font-semibold text-[hsl(var(--foreground))] cursor-pointer hover:bg-[hsl(var(--muted))] transition-colors"
-                onClick={() => handleSort("platform")}
-              >
-                Platform{sortKey === "platform" && (
-                  <span className="ml-1 text-xs">
-                    {sortDir === "asc" ? "▲" : "▼"}
-                  </span>
-                )}
-              </th>
-              <th
-                className="border-r border-[hsl(var(--border))] px-3 py-3 text-center text-sm font-semibold text-[hsl(var(--foreground))] cursor-pointer hover:bg-[hsl(var(--muted))] transition-colors"
-                onClick={() => handleSort("rapid24h")}
-              >
-                Rapid 24h{sortKey === "rapid24h" && (
-                  <span className="ml-1 text-xs">
-                    {sortDir === "asc" ? "▲" : "▼"}
-                  </span>
-                )}
-              </th>
-              <th
-                className="border-r border-[hsl(var(--border))] px-3 py-3 text-center text-sm font-semibold text-[hsl(var(--foreground))] cursor-pointer hover:bg-[hsl(var(--muted))] transition-colors"
-                onClick={() => handleSort("rapid7d")}
-              >
-                Rapid 7d{sortKey === "rapid7d" && (
-                  <span className="ml-1 text-xs">
-                    {sortDir === "asc" ? "▲" : "▼"}
-                  </span>
-                )}
-              </th>
-              <th
-                className="border-r border-[hsl(var(--border))] px-3 py-3 text-center text-sm font-semibold text-[hsl(var(--foreground))] cursor-pointer hover:bg-[hsl(var(--muted))] transition-colors"
-                onClick={() => handleSort("blitz24h")}
-              >
-                Blitz 24h{sortKey === "blitz24h" && (
-                  <span className="ml-1 text-xs">
-                    {sortDir === "asc" ? "▲" : "▼"}
-                  </span>
-                )}
-              </th>
-              <th
-                className="border-r border-[hsl(var(--border))] px-3 py-3 text-center text-sm font-semibold text-[hsl(var(--foreground))] cursor-pointer hover:bg-[hsl(var(--muted))] transition-colors"
-                onClick={() => handleSort("blitz7d")}
-              >
-                Blitz 7d{sortKey === "blitz7d" && (
-                  <span className="ml-1 text-xs">
-                    {sortDir === "asc" ? "▲" : "▼"}
-                  </span>
-                )}
-              </th>
-              <th
-                className="border-r border-[hsl(var(--border))] px-3 py-3 text-center text-sm font-semibold text-[hsl(var(--foreground))] cursor-pointer hover:bg-[hsl(var(--muted))] transition-colors"
+                className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-xs font-semibold text-[hsl(var(--foreground))] uppercase tracking-wide cursor-pointer hover:bg-[hsl(var(--muted))] transition-colors"
                 onClick={() => handleSort("rapidRating")}
               >
-                Rapid rating{sortKey === "rapidRating" && (
-                  <span className="ml-1 text-xs">
-                    {sortDir === "asc" ? "▲" : "▼"}
-                  </span>
-                )}
+                <span className="inline-flex items-center">
+                  Rapid rating
+                  {sortKey === "rapidRating" && (
+                    <span className="ml-1.5 text-xs text-[hsl(var(--muted-foreground))]">
+                      {sortDir === "asc" ? "▲" : "▼"}
+                    </span>
+                  )}
+                </span>
               </th>
               <th
-                className="border-r border-[hsl(var(--border))] px-3 py-3 text-center text-sm font-semibold text-[hsl(var(--foreground))] cursor-pointer hover:bg-[hsl(var(--muted))] transition-colors"
+                className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-xs font-semibold text-[hsl(var(--foreground))] uppercase tracking-wide cursor-pointer hover:bg-[hsl(var(--muted))] transition-colors"
                 onClick={() => handleSort("blitzRating")}
               >
-                Blitz rating{sortKey === "blitzRating" && (
-                  <span className="ml-1 text-xs">
-                    {sortDir === "asc" ? "▲" : "▼"}
-                  </span>
-                )}
+                <span className="inline-flex items-center">
+                  Blitz rating
+                  {sortKey === "blitzRating" && (
+                    <span className="ml-1.5 text-xs text-[hsl(var(--muted-foreground))]">
+                      {sortDir === "asc" ? "▲" : "▼"}
+                    </span>
+                  )}
+                </span>
+              </th>
+              <th className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-xs font-semibold text-[hsl(var(--foreground))] uppercase tracking-wide">
+                Puzzles (3d)
+              </th>
+              <th className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-xs font-semibold text-[hsl(var(--foreground))] uppercase tracking-wide">
+                Puzzles (7d)
               </th>
               <th
-                className="border-r border-[hsl(var(--border))] px-3 py-3 text-center text-sm font-semibold text-[hsl(var(--foreground))] cursor-pointer hover:bg-[hsl(var(--muted))] transition-colors"
-                onClick={() => handleSort("puzzleDelta3d")}
-              >
-                Puzzles (3d){sortKey === "puzzleDelta3d" && (
-                  <span className="ml-1 text-xs">
-                    {sortDir === "asc" ? "▲" : "▼"}
-                  </span>
-                )}
-              </th>
-              <th
-                className="border-r border-[hsl(var(--border))] px-3 py-3 text-center text-sm font-semibold text-[hsl(var(--foreground))] cursor-pointer hover:bg-[hsl(var(--muted))] transition-colors"
-                onClick={() => handleSort("puzzleDelta7d")}
-              >
-                Puzzles (7d){sortKey === "puzzleDelta7d" && (
-                  <span className="ml-1 text-xs">
-                    {sortDir === "asc" ? "▲" : "▼"}
-                  </span>
-                )}
-              </th>
-              <th
-                className="border-r border-[hsl(var(--border))] px-3 py-3 text-center text-sm font-semibold text-[hsl(var(--foreground))] cursor-pointer hover:bg-[hsl(var(--muted))] transition-colors"
+                className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-xs font-semibold text-[hsl(var(--foreground))] uppercase tracking-wide cursor-pointer hover:bg-[hsl(var(--muted))] transition-colors"
                 onClick={() => handleSort("puzzleRating")}
               >
-                Puzzle rating{sortKey === "puzzleRating" && (
-                  <span className="ml-1 text-xs">
-                    {sortDir === "asc" ? "▲" : "▼"}
-                  </span>
-                )}
+                <span className="inline-flex items-center">
+                  Puzzle rating
+                  {sortKey === "puzzleRating" && (
+                    <span className="ml-1.5 text-xs text-[hsl(var(--muted-foreground))]">
+                      {sortDir === "asc" ? "▲" : "▼"}
+                    </span>
+                  )}
+                </span>
+              </th>
+              <th className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-xs font-semibold text-[hsl(var(--foreground))] uppercase tracking-wide">
+                Homework %
               </th>
               <th
-                className="border-r border-[hsl(var(--border))] px-3 py-3 text-center text-sm font-semibold text-[hsl(var(--foreground))] cursor-pointer hover:bg-[hsl(var(--muted))] transition-colors"
-                onClick={() => handleSort("homeworkPct")}
-              >
-                Homework %{sortKey === "homeworkPct" && (
-                  <span className="ml-1 text-xs">
-                    {sortDir === "asc" ? "▲" : "▼"}
-                  </span>
-                )}
-              </th>
-              <th
-                className="border-r border-[hsl(var(--border))] px-3 py-3 text-left text-sm font-semibold text-[hsl(var(--foreground))] cursor-pointer hover:bg-[hsl(var(--muted))] transition-colors"
+                className="border-r border-[hsl(var(--border))] px-3 py-2 text-left text-xs font-semibold text-[hsl(var(--foreground))] uppercase tracking-wide cursor-pointer hover:bg-[hsl(var(--muted))] transition-colors"
                 onClick={() => handleSort("lastActive")}
               >
-                Last active{sortKey === "lastActive" && (
-                  <span className="ml-1 text-xs">
-                    {sortDir === "asc" ? "▲" : "▼"}
-                  </span>
-                )}
+                <span className="inline-flex items-center">
+                  Last active
+                  {sortKey === "lastActive" && (
+                    <span className="ml-1.5 text-xs text-[hsl(var(--muted-foreground))]">
+                      {sortDir === "asc" ? "▲" : "▼"}
+                    </span>
+                  )}
+                </span>
               </th>
-              <th className="border-[hsl(var(--border))] px-3 py-3 text-center text-sm font-semibold text-[hsl(var(--foreground))]">
+              <th className="px-3 py-2 text-center text-xs font-semibold text-[hsl(var(--foreground))] uppercase tracking-wide">
                 Actions
               </th>
             </tr>
           </thead>
           <tbody>
-            {sortedStudents.map((student, index) => (
-              <tr key={student.id} className="border-b border-[hsl(var(--border))] hover:bg-[hsl(var(--muted))] transition-colors">
-                <td className="border-r border-[hsl(var(--border))] px-3 py-3 text-center text-sm text-[hsl(var(--foreground))] tabular-nums">
-                  {index + 1}
-                </td>
-                <td className="border-r border-[hsl(var(--border))] px-3 py-3 text-sm font-medium text-[hsl(var(--foreground))]">
-                  {student.nickname}
-                </td>
-                <td className="border-r border-[hsl(var(--border))] px-3 py-3 text-sm text-[hsl(var(--muted-foreground))]">
-                  {student.platform === "lichess" ? "Lichess" : "Chess.com"}
-                </td>
-                <td className="border-r border-[hsl(var(--border))] px-3 py-3 text-right text-sm text-[hsl(var(--foreground))] tabular-nums">
-                  {student.rapidGames24h}
-                </td>
-                <td className="border-r border-[hsl(var(--border))] px-3 py-3 text-right text-sm text-[hsl(var(--foreground))] tabular-nums">
-                  {student.rapidGames7d}
-                </td>
-                <td className="border-r border-[hsl(var(--border))] px-3 py-3 text-right text-sm text-[hsl(var(--foreground))] tabular-nums">
-                  {student.blitzGames24h}
-                </td>
-                <td className="border-r border-[hsl(var(--border))] px-3 py-3 text-right text-sm text-[hsl(var(--foreground))] tabular-nums">
-                  {student.blitzGames7d}
-                </td>
-                <td className="border-r border-[hsl(var(--border))] px-3 py-3 text-right text-sm text-[hsl(var(--foreground))] tabular-nums">
-                  {student.rapidRating !== null ? student.rapidRating : "—"}
-                </td>
-                <td className="border-r border-[hsl(var(--border))] px-3 py-3 text-right text-sm text-[hsl(var(--foreground))] tabular-nums">
-                  {student.blitzRating !== null ? student.blitzRating : "—"}
-                </td>
-                <td className="border-r border-[hsl(var(--border))] px-3 py-3 text-right text-sm tabular-nums">
-                  {student.puzzleDelta3d !== null ? (
-                    <span className={student.puzzleDelta3d > 0 ? "text-green-600 dark:text-green-400 font-semibold" : "text-[hsl(var(--muted-foreground))]"}>
-                      {student.puzzleDelta3d > 0 ? "+" : ""}{student.puzzleDelta3d}
-                    </span>
-                  ) : (
-                    <span className="text-[hsl(var(--muted-foreground))]">—</span>
-                  )}
-                </td>
-                <td className="border-r border-[hsl(var(--border))] px-3 py-3 text-right text-sm tabular-nums">
-                  {student.puzzleDelta7d !== null ? (
-                    <span className={student.puzzleDelta7d > 0 ? "text-green-600 dark:text-green-400 font-semibold" : "text-[hsl(var(--muted-foreground))]"}>
-                      {student.puzzleDelta7d > 0 ? "+" : ""}{student.puzzleDelta7d}
-                    </span>
-                  ) : (
-                    <span className="text-[hsl(var(--muted-foreground))]">—</span>
-                  )}
-                </td>
-                <td className="border-r border-[hsl(var(--border))] px-3 py-3 text-right text-sm text-[hsl(var(--foreground))] tabular-nums">
-                  {student.puzzleRating !== null ? student.puzzleRating : <span className="text-[hsl(var(--muted-foreground))]">—</span>}
-                </td>
-                <td className="border-r border-[hsl(var(--border))] px-3 py-3 text-right text-sm text-[hsl(var(--foreground))] tabular-nums">
-                  {student.homeworkCompletionPct}%
-                </td>
-                <td className="border-r border-[hsl(var(--border))] px-3 py-3 text-sm text-[hsl(var(--foreground))]">
-                  {(() => {
-                    const { label, color } = formatLastActive(student.seenAt);
-                    if (student.seenAt === null) {
-                      return <span className="text-[hsl(var(--muted-foreground))]">—</span>;
-                    }
-                    const dotColorClass =
-                      color === "green"
-                        ? "bg-green-500 dark:bg-green-400"
-                        : color === "yellow"
-                        ? "bg-yellow-500 dark:bg-yellow-400"
-                        : "bg-red-500 dark:bg-red-400";
-                    return (
-                      <div className="flex items-center gap-2">
-                        <span className={`w-2 h-2 rounded-full ${dotColorClass}`}></span>
-                        <span className="text-[hsl(var(--muted-foreground))]">{label}</span>
-                      </div>
-                    );
-                  })()}
-                </td>
-                <td className="px-3 py-3 text-center">
-                  <div className="flex items-center justify-center gap-2">
-                    <button
-                      onClick={() => handleHide(student.id)}
-                      title="Приховати"
-                      className="text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] hover:bg-[hsl(var(--muted))] p-1.5 rounded transition-colors"
-                    >
-                      <EyeOff size={16} />
-                    </button>
-                    <button
-                      onClick={() => handleDelete(student.id)}
-                      title="Видалити з бази"
-                      className="text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 hover:bg-red-50 dark:hover:bg-red-950/30 p-1.5 rounded transition-colors"
-                    >
-                      <Trash2 size={16} />
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            ))}
+            {sortedStudents.map((student, index) => {
+              const { label: lastActiveLabel, variant: lastActiveVariant } = parseLastActive(student.seenAt);
+              return (
+                <tr key={student.id} className="border-b border-[hsl(var(--border))] hover:bg-[hsl(var(--muted))] transition-colors bg-[hsl(var(--card))]">
+                  <td className="border-r border-[hsl(var(--border))] px-3 py-2 text-center text-sm text-[hsl(var(--foreground))] tabular-nums">
+                    {index + 1}
+                  </td>
+                  <td className="border-r border-[hsl(var(--border))] px-3 py-2 text-sm font-medium text-[hsl(var(--foreground))]">
+                    {student.nickname}
+                  </td>
+                  <td className="border-r border-[hsl(var(--border))] px-3 py-2 text-sm text-[hsl(var(--muted-foreground))]">
+                    {student.platform === "lichess" ? "Lichess" : "Chess.com"}
+                  </td>
+                  <td className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-sm text-[hsl(var(--foreground))] tabular-nums">
+                    {student.rapidGames24h}
+                  </td>
+                  <td className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-sm text-[hsl(var(--foreground))] tabular-nums">
+                    {student.rapidGames7d}
+                  </td>
+                  <td className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-sm text-[hsl(var(--foreground))] tabular-nums">
+                    {student.blitzGames24h}
+                  </td>
+                  <td className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-sm text-[hsl(var(--foreground))] tabular-nums">
+                    {student.blitzGames7d}
+                  </td>
+                  <td className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-sm text-[hsl(var(--foreground))] tabular-nums">
+                    {student.rapidRating !== null ? student.rapidRating : <span className="text-[hsl(var(--muted-foreground))]">—</span>}
+                  </td>
+                  <td className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-sm text-[hsl(var(--foreground))] tabular-nums">
+                    {student.blitzRating !== null ? student.blitzRating : <span className="text-[hsl(var(--muted-foreground))]">—</span>}
+                  </td>
+                  <td className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-sm tabular-nums">
+                    {student.puzzleDelta3d !== null ? (
+                      <span className={student.puzzleDelta3d > 0 ? "text-green-600 dark:text-green-400 font-semibold" : "text-[hsl(var(--muted-foreground))]"}>
+                        {student.puzzleDelta3d > 0 ? "+" : ""}{student.puzzleDelta3d}
+                      </span>
+                    ) : (
+                      <span className="text-[hsl(var(--muted-foreground))]">—</span>
+                    )}
+                  </td>
+                  <td className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-sm tabular-nums">
+                    {student.puzzleDelta7d !== null ? (
+                      <span className={student.puzzleDelta7d > 0 ? "text-green-600 dark:text-green-400 font-semibold" : "text-[hsl(var(--muted-foreground))]"}>
+                        {student.puzzleDelta7d > 0 ? "+" : ""}{student.puzzleDelta7d}
+                      </span>
+                    ) : (
+                      <span className="text-[hsl(var(--muted-foreground))]">—</span>
+                    )}
+                  </td>
+                  <td className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-sm text-[hsl(var(--foreground))] tabular-nums">
+                    {student.puzzleRating !== null ? student.puzzleRating : <span className="text-[hsl(var(--muted-foreground))]">—</span>}
+                  </td>
+                  <td className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-sm text-[hsl(var(--foreground))] tabular-nums">
+                    {student.homeworkCompletionPct}%
+                  </td>
+                  <td className="border-r border-[hsl(var(--border))] px-3 py-2 text-sm">
+                    <Badge variant={lastActiveVariant}>{lastActiveLabel}</Badge>
+                  </td>
+                  <td className="px-3 py-2">
+                    <div className="flex items-center gap-2 justify-end">
+                      {/* Hide Button (with text on desktop) */}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleHide(student.id)}
+                        title="Hide student"
+                        className="h-8 px-2"
+                        aria-label="Hide student"
+                      >
+                        <span className="hidden lg:inline">Hide</span>
+                        <span className="lg:hidden">👁</span>
+                      </Button>
+
+                      {/* Delete Button (visible) */}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 w-8 p-0 text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300"
+                        onClick={() => {
+                          if (confirm("Ви точно хочете видалити цього учня з Бази Даних назавжди?")) {
+                            handleDelete(student.id);
+                          }
+                        }}
+                        title="Delete student"
+                        aria-label="Delete student"
+                      >
+                        🗑
+                      </Button>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
-        </table>
-        </div>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
       </div>
     </div>
   );
