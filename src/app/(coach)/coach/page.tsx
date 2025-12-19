@@ -1080,22 +1080,29 @@ export default function CoachDashboardPage() {
   }, [displayedStudents, sortKey, sortDir]);
 
   return (
-    <div>
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold">Coach Dashboard</h1>
+    <div className="max-w-[1200px] mx-auto px-6 py-8 space-y-6">
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-bold text-[hsl(var(--foreground))]">Coach Dashboard</h1>
+          <p className="text-sm text-[hsl(var(--muted-foreground))] mt-1">
+            Manage your students and track their progress
+          </p>
+        </div>
         <button
           onClick={handleUpdateStats}
           disabled={isUpdatingStats}
-          className="px-4 py-2 border border-gray-300 rounded-md text-sm font-semibold hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+          className="h-10 px-4 rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] text-[hsl(var(--foreground))] text-sm font-medium hover:bg-[hsl(var(--muted))] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {isUpdatingStats ? "Updating..." : "Update Stats"}
         </button>
       </div>
 
-      <div className="mb-6 p-4 border rounded-lg bg-white">
+      {/* Add Student Card */}
+      <div className="rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-sm p-4">
         <div className="flex gap-3 items-end">
           <div className="flex-1">
-            <label className="block text-sm font-medium mb-1">
+            <label className="block text-sm font-medium mb-1 text-[hsl(var(--foreground))]">
               Nickname
             </label>
             <input
@@ -1110,24 +1117,24 @@ export default function CoachDashboardPage() {
                   handleAdd();
                 }
               }}
-              className="w-full border rounded-md px-3 py-2 text-sm"
+              className="w-full h-10 rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--background))] text-[hsl(var(--foreground))] placeholder:text-[hsl(var(--muted-foreground))] px-3 text-sm focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))] focus:ring-offset-2 focus:ring-offset-[hsl(var(--background))] transition-colors"
               placeholder="Enter nickname"
             />
             {errorMsg && (
-              <p className="text-red-600 text-xs mt-1">{errorMsg}</p>
+              <p className="text-red-600 dark:text-red-400 text-xs mt-1">{errorMsg}</p>
             )}
           </div>
           <button
             onClick={handleAdd}
             disabled={isAdding}
-            className="px-4 py-2 bg-black text-white rounded-md text-sm font-semibold hover:bg-gray-800 disabled:opacity-50"
+            className="h-10 px-4 rounded-lg bg-[hsl(var(--primary))] text-[hsl(var(--primary-foreground))] text-sm font-medium hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
           >
             Add
           </button>
           {hiddenIds.length > 0 && (
             <button
               onClick={() => setHiddenIds([])}
-              className="px-4 py-2 border rounded-md text-sm font-semibold hover:bg-gray-50"
+              className="h-10 px-4 rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] text-[hsl(var(--foreground))] text-sm font-medium hover:bg-[hsl(var(--muted))] transition-colors"
               title="Показати всіх прихованих учнів"
             >
               👁️ Показати всіх
@@ -1136,12 +1143,14 @@ export default function CoachDashboardPage() {
         </div>
       </div>
 
-      <div className="overflow-x-auto">
-        <table className="w-full border-collapse border border-gray-300 text-sm">
+      {/* Table Card */}
+      <div className="rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] overflow-hidden shadow-sm">
+        <div className="overflow-x-auto">
+          <table className="w-full border-collapse text-sm">
           <thead>
-            <tr className="bg-gray-50">
+            <tr className="bg-[hsl(var(--card))] border-b border-[hsl(var(--border))] sticky top-0">
               <th
-                className="border border-gray-300 px-3 py-2 text-center font-semibold cursor-pointer hover:bg-gray-100"
+                className="border-r border-[hsl(var(--border))] px-3 py-3 text-center text-sm font-semibold text-[hsl(var(--foreground))] cursor-pointer hover:bg-[hsl(var(--muted))] transition-colors"
                 onClick={() => handleSort("index")}
               >
                 #{sortKey === "index" && (
@@ -1151,7 +1160,7 @@ export default function CoachDashboardPage() {
                 )}
               </th>
               <th
-                className="border border-gray-300 px-3 py-2 text-left font-semibold cursor-pointer hover:bg-gray-100"
+                className="border-r border-[hsl(var(--border))] px-3 py-3 text-left text-sm font-semibold text-[hsl(var(--foreground))] cursor-pointer hover:bg-[hsl(var(--muted))] transition-colors"
                 onClick={() => handleSort("nickname")}
               >
                 Nickname{sortKey === "nickname" && (
@@ -1161,7 +1170,7 @@ export default function CoachDashboardPage() {
                 )}
               </th>
               <th
-                className="border border-gray-300 px-3 py-2 text-left font-semibold cursor-pointer hover:bg-gray-100"
+                className="border-r border-[hsl(var(--border))] px-3 py-3 text-left text-sm font-semibold text-[hsl(var(--foreground))] cursor-pointer hover:bg-[hsl(var(--muted))] transition-colors"
                 onClick={() => handleSort("platform")}
               >
                 Platform{sortKey === "platform" && (
@@ -1171,7 +1180,7 @@ export default function CoachDashboardPage() {
                 )}
               </th>
               <th
-                className="border border-gray-300 px-3 py-2 text-center font-semibold cursor-pointer hover:bg-gray-100"
+                className="border-r border-[hsl(var(--border))] px-3 py-3 text-center text-sm font-semibold text-[hsl(var(--foreground))] cursor-pointer hover:bg-[hsl(var(--muted))] transition-colors"
                 onClick={() => handleSort("rapid24h")}
               >
                 Rapid 24h{sortKey === "rapid24h" && (
@@ -1181,7 +1190,7 @@ export default function CoachDashboardPage() {
                 )}
               </th>
               <th
-                className="border border-gray-300 px-3 py-2 text-center font-semibold cursor-pointer hover:bg-gray-100"
+                className="border-r border-[hsl(var(--border))] px-3 py-3 text-center text-sm font-semibold text-[hsl(var(--foreground))] cursor-pointer hover:bg-[hsl(var(--muted))] transition-colors"
                 onClick={() => handleSort("rapid7d")}
               >
                 Rapid 7d{sortKey === "rapid7d" && (
@@ -1191,7 +1200,7 @@ export default function CoachDashboardPage() {
                 )}
               </th>
               <th
-                className="border border-gray-300 px-3 py-2 text-center font-semibold cursor-pointer hover:bg-gray-100"
+                className="border-r border-[hsl(var(--border))] px-3 py-3 text-center text-sm font-semibold text-[hsl(var(--foreground))] cursor-pointer hover:bg-[hsl(var(--muted))] transition-colors"
                 onClick={() => handleSort("blitz24h")}
               >
                 Blitz 24h{sortKey === "blitz24h" && (
@@ -1201,7 +1210,7 @@ export default function CoachDashboardPage() {
                 )}
               </th>
               <th
-                className="border border-gray-300 px-3 py-2 text-center font-semibold cursor-pointer hover:bg-gray-100"
+                className="border-r border-[hsl(var(--border))] px-3 py-3 text-center text-sm font-semibold text-[hsl(var(--foreground))] cursor-pointer hover:bg-[hsl(var(--muted))] transition-colors"
                 onClick={() => handleSort("blitz7d")}
               >
                 Blitz 7d{sortKey === "blitz7d" && (
@@ -1211,7 +1220,7 @@ export default function CoachDashboardPage() {
                 )}
               </th>
               <th
-                className="border border-gray-300 px-3 py-2 text-center font-semibold cursor-pointer hover:bg-gray-100"
+                className="border-r border-[hsl(var(--border))] px-3 py-3 text-center text-sm font-semibold text-[hsl(var(--foreground))] cursor-pointer hover:bg-[hsl(var(--muted))] transition-colors"
                 onClick={() => handleSort("rapidRating")}
               >
                 Rapid rating{sortKey === "rapidRating" && (
@@ -1221,7 +1230,7 @@ export default function CoachDashboardPage() {
                 )}
               </th>
               <th
-                className="border border-gray-300 px-3 py-2 text-center font-semibold cursor-pointer hover:bg-gray-100"
+                className="border-r border-[hsl(var(--border))] px-3 py-3 text-center text-sm font-semibold text-[hsl(var(--foreground))] cursor-pointer hover:bg-[hsl(var(--muted))] transition-colors"
                 onClick={() => handleSort("blitzRating")}
               >
                 Blitz rating{sortKey === "blitzRating" && (
@@ -1231,7 +1240,7 @@ export default function CoachDashboardPage() {
                 )}
               </th>
               <th
-                className="border border-gray-300 px-3 py-2 text-center font-semibold cursor-pointer hover:bg-gray-100"
+                className="border-r border-[hsl(var(--border))] px-3 py-3 text-center text-sm font-semibold text-[hsl(var(--foreground))] cursor-pointer hover:bg-[hsl(var(--muted))] transition-colors"
                 onClick={() => handleSort("puzzleDelta3d")}
               >
                 Puzzles (3d){sortKey === "puzzleDelta3d" && (
@@ -1241,7 +1250,7 @@ export default function CoachDashboardPage() {
                 )}
               </th>
               <th
-                className="border border-gray-300 px-3 py-2 text-center font-semibold cursor-pointer hover:bg-gray-100"
+                className="border-r border-[hsl(var(--border))] px-3 py-3 text-center text-sm font-semibold text-[hsl(var(--foreground))] cursor-pointer hover:bg-[hsl(var(--muted))] transition-colors"
                 onClick={() => handleSort("puzzleDelta7d")}
               >
                 Puzzles (7d){sortKey === "puzzleDelta7d" && (
@@ -1251,7 +1260,7 @@ export default function CoachDashboardPage() {
                 )}
               </th>
               <th
-                className="border border-gray-300 px-3 py-2 text-center font-semibold cursor-pointer hover:bg-gray-100"
+                className="border-r border-[hsl(var(--border))] px-3 py-3 text-center text-sm font-semibold text-[hsl(var(--foreground))] cursor-pointer hover:bg-[hsl(var(--muted))] transition-colors"
                 onClick={() => handleSort("puzzleRating")}
               >
                 Puzzle rating{sortKey === "puzzleRating" && (
@@ -1261,7 +1270,7 @@ export default function CoachDashboardPage() {
                 )}
               </th>
               <th
-                className="border border-gray-300 px-3 py-2 text-center font-semibold cursor-pointer hover:bg-gray-100"
+                className="border-r border-[hsl(var(--border))] px-3 py-3 text-center text-sm font-semibold text-[hsl(var(--foreground))] cursor-pointer hover:bg-[hsl(var(--muted))] transition-colors"
                 onClick={() => handleSort("homeworkPct")}
               >
                 Homework %{sortKey === "homeworkPct" && (
@@ -1271,7 +1280,7 @@ export default function CoachDashboardPage() {
                 )}
               </th>
               <th
-                className="border border-gray-300 px-3 py-2 text-left font-semibold cursor-pointer hover:bg-gray-100"
+                className="border-r border-[hsl(var(--border))] px-3 py-3 text-left text-sm font-semibold text-[hsl(var(--foreground))] cursor-pointer hover:bg-[hsl(var(--muted))] transition-colors"
                 onClick={() => handleSort("lastActive")}
               >
                 Last active{sortKey === "lastActive" && (
@@ -1280,98 +1289,98 @@ export default function CoachDashboardPage() {
                   </span>
                 )}
               </th>
-              <th className="border border-gray-300 px-3 py-2 text-center font-semibold">
+              <th className="border-[hsl(var(--border))] px-3 py-3 text-center text-sm font-semibold text-[hsl(var(--foreground))]">
                 Actions
               </th>
             </tr>
           </thead>
           <tbody>
             {sortedStudents.map((student, index) => (
-              <tr key={student.id} className="hover:bg-gray-50">
-                <td className="border border-gray-300 px-3 py-2 text-center">
+              <tr key={student.id} className="border-b border-[hsl(var(--border))] hover:bg-[hsl(var(--muted))] transition-colors">
+                <td className="border-r border-[hsl(var(--border))] px-3 py-3 text-center text-sm text-[hsl(var(--foreground))] tabular-nums">
                   {index + 1}
                 </td>
-                <td className="border border-gray-300 px-3 py-2">
+                <td className="border-r border-[hsl(var(--border))] px-3 py-3 text-sm font-medium text-[hsl(var(--foreground))]">
                   {student.nickname}
                 </td>
-                <td className="border border-gray-300 px-3 py-2">
+                <td className="border-r border-[hsl(var(--border))] px-3 py-3 text-sm text-[hsl(var(--muted-foreground))]">
                   {student.platform === "lichess" ? "Lichess" : "Chess.com"}
                 </td>
-                <td className="border border-gray-300 px-3 py-2 text-right">
+                <td className="border-r border-[hsl(var(--border))] px-3 py-3 text-right text-sm text-[hsl(var(--foreground))] tabular-nums">
                   {student.rapidGames24h}
                 </td>
-                <td className="border border-gray-300 px-3 py-2 text-right">
+                <td className="border-r border-[hsl(var(--border))] px-3 py-3 text-right text-sm text-[hsl(var(--foreground))] tabular-nums">
                   {student.rapidGames7d}
                 </td>
-                <td className="border border-gray-300 px-3 py-2 text-right">
+                <td className="border-r border-[hsl(var(--border))] px-3 py-3 text-right text-sm text-[hsl(var(--foreground))] tabular-nums">
                   {student.blitzGames24h}
                 </td>
-                <td className="border border-gray-300 px-3 py-2 text-right">
+                <td className="border-r border-[hsl(var(--border))] px-3 py-3 text-right text-sm text-[hsl(var(--foreground))] tabular-nums">
                   {student.blitzGames7d}
                 </td>
-                <td className="border border-gray-300 px-3 py-2 text-right">
+                <td className="border-r border-[hsl(var(--border))] px-3 py-3 text-right text-sm text-[hsl(var(--foreground))] tabular-nums">
                   {student.rapidRating !== null ? student.rapidRating : "—"}
                 </td>
-                <td className="border border-gray-300 px-3 py-2 text-right">
+                <td className="border-r border-[hsl(var(--border))] px-3 py-3 text-right text-sm text-[hsl(var(--foreground))] tabular-nums">
                   {student.blitzRating !== null ? student.blitzRating : "—"}
                 </td>
-                <td className="border border-gray-300 px-3 py-2 text-right">
+                <td className="border-r border-[hsl(var(--border))] px-3 py-3 text-right text-sm tabular-nums">
                   {student.puzzleDelta3d !== null ? (
-                    <span className={student.puzzleDelta3d > 0 ? "text-green-600 font-semibold" : ""}>
+                    <span className={student.puzzleDelta3d > 0 ? "text-green-600 dark:text-green-400 font-semibold" : "text-[hsl(var(--muted-foreground))]"}>
                       {student.puzzleDelta3d > 0 ? "+" : ""}{student.puzzleDelta3d}
                     </span>
                   ) : (
-                    "—"
+                    <span className="text-[hsl(var(--muted-foreground))]">—</span>
                   )}
                 </td>
-                <td className="border border-gray-300 px-3 py-2 text-right">
+                <td className="border-r border-[hsl(var(--border))] px-3 py-3 text-right text-sm tabular-nums">
                   {student.puzzleDelta7d !== null ? (
-                    <span className={student.puzzleDelta7d > 0 ? "text-green-600 font-semibold" : ""}>
+                    <span className={student.puzzleDelta7d > 0 ? "text-green-600 dark:text-green-400 font-semibold" : "text-[hsl(var(--muted-foreground))]"}>
                       {student.puzzleDelta7d > 0 ? "+" : ""}{student.puzzleDelta7d}
                     </span>
                   ) : (
-                    "—"
+                    <span className="text-[hsl(var(--muted-foreground))]">—</span>
                   )}
                 </td>
-                <td className="border border-gray-300 px-3 py-2 text-right">
-                  {student.puzzleRating !== null ? student.puzzleRating : "—"}
+                <td className="border-r border-[hsl(var(--border))] px-3 py-3 text-right text-sm text-[hsl(var(--foreground))] tabular-nums">
+                  {student.puzzleRating !== null ? student.puzzleRating : <span className="text-[hsl(var(--muted-foreground))]">—</span>}
                 </td>
-                <td className="border border-gray-300 px-3 py-2 text-right">
+                <td className="border-r border-[hsl(var(--border))] px-3 py-3 text-right text-sm text-[hsl(var(--foreground))] tabular-nums">
                   {student.homeworkCompletionPct}%
                 </td>
-                <td className="border border-gray-300 px-3 py-2">
+                <td className="border-r border-[hsl(var(--border))] px-3 py-3 text-sm text-[hsl(var(--foreground))]">
                   {(() => {
                     const { label, color } = formatLastActive(student.seenAt);
                     if (student.seenAt === null) {
-                      return <span className="text-gray-400">—</span>;
+                      return <span className="text-[hsl(var(--muted-foreground))]">—</span>;
                     }
                     const dotColorClass =
                       color === "green"
-                        ? "bg-green-500"
+                        ? "bg-green-500 dark:bg-green-400"
                         : color === "yellow"
-                        ? "bg-yellow-500"
-                        : "bg-red-500";
+                        ? "bg-yellow-500 dark:bg-yellow-400"
+                        : "bg-red-500 dark:bg-red-400";
                     return (
                       <div className="flex items-center gap-2">
                         <span className={`w-2 h-2 rounded-full ${dotColorClass}`}></span>
-                        <span>{label}</span>
+                        <span className="text-[hsl(var(--muted-foreground))]">{label}</span>
                       </div>
                     );
                   })()}
                 </td>
-                <td className="border border-gray-300 px-3 py-2 text-center">
+                <td className="px-3 py-3 text-center">
                   <div className="flex items-center justify-center gap-2">
                     <button
                       onClick={() => handleHide(student.id)}
                       title="Приховати"
-                      className="text-gray-500 hover:text-gray-700 hover:bg-gray-100 p-1 rounded transition-colors"
+                      className="text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] hover:bg-[hsl(var(--muted))] p-1.5 rounded transition-colors"
                     >
                       <EyeOff size={16} />
                     </button>
                     <button
                       onClick={() => handleDelete(student.id)}
                       title="Видалити з бази"
-                      className="text-red-500 hover:text-red-700 hover:bg-red-50 p-1 rounded transition-colors"
+                      className="text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 hover:bg-red-50 dark:hover:bg-red-950/30 p-1.5 rounded transition-colors"
                     >
                       <Trash2 size={16} />
                     </button>
@@ -1381,6 +1390,7 @@ export default function CoachDashboardPage() {
             ))}
           </tbody>
         </table>
+        </div>
       </div>
     </div>
   );

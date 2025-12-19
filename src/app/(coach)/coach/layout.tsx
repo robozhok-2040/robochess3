@@ -9,16 +9,53 @@ export default function CoachLayout({
   return (
     <AppShell
       sidebar={
-        <div className="p-4">
-          <h2 className="font-semibold mb-2">Coach</h2>
-          <ul className="space-y-1 text-sm">
-            <li><Link className="hover:underline" href="/coach">Dashboard</Link></li>
-            <li><Link className="hover:underline" href="/coach/analytics">Analytics</Link></li>
-            <li><Link className="hover:underline" href="/coach/students">Students</Link></li>
-            <li><Link className="hover:underline" href="/coach/homework">Homework</Link></li>
-            <li><Link className="hover:underline" href="/coach/mysite">MySite</Link></li>
+        <nav className="p-4">
+          <h2 className="font-semibold mb-4 text-sm uppercase tracking-wider text-[hsl(var(--muted-foreground))]">
+            Coach
+          </h2>
+          <ul className="space-y-1">
+            <li>
+              <Link 
+                className="block px-3 py-2 rounded-md text-sm text-[hsl(var(--foreground))] hover:bg-[hsl(var(--muted))] transition-colors" 
+                href="/coach"
+              >
+                Dashboard
+              </Link>
+            </li>
+            <li>
+              <Link 
+                className="block px-3 py-2 rounded-md text-sm text-[hsl(var(--foreground))] hover:bg-[hsl(var(--muted))] transition-colors" 
+                href="/coach/analytics"
+              >
+                Analytics
+              </Link>
+            </li>
+            <li>
+              <Link 
+                className="block px-3 py-2 rounded-md text-sm text-[hsl(var(--foreground))] hover:bg-[hsl(var(--muted))] transition-colors" 
+                href="/coach/students"
+              >
+                Students
+              </Link>
+            </li>
+            <li>
+              <Link 
+                className="block px-3 py-2 rounded-md text-sm text-[hsl(var(--foreground))] hover:bg-[hsl(var(--muted))] transition-colors" 
+                href="/coach/homework"
+              >
+                Homework
+              </Link>
+            </li>
+            <li>
+              <Link 
+                className="block px-3 py-2 rounded-md text-sm text-[hsl(var(--foreground))] hover:bg-[hsl(var(--muted))] transition-colors" 
+                href="/coach/mysite"
+              >
+                MySite
+              </Link>
+            </li>
           </ul>
-        </div>
+        </nav>
       }
     >
       {children}
