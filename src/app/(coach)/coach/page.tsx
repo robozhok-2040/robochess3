@@ -52,6 +52,7 @@ export default function CoachDashboardPage() {
   const [isUpdatingStats, setIsUpdatingStats] = useState(false);
   const [sortKey, setSortKey] = useState<SortKey>("nickname");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+  const [platformFilter, setPlatformFilter] = useState<"all" | "lichess" | "chesscom">("all");
 
   // Helper function to format relative time and determine traffic light color
   function formatLastActive(seenAt: number | null): { label: string; color: string } {
@@ -207,6 +208,7 @@ export default function CoachDashboardPage() {
               rapidRating: data.chess_rapid?.last?.rating || null,
               blitzRating: data.chess_blitz?.last?.rating || null,
               puzzleRating: data.tactics?.highest?.rating || null,
+              seenAt: null, // Chess.com API doesn't provide seenAt timestamp
             };
 
               console.log(`✅ Chess.com stats fetched for ${student.handle}:`, updates);
@@ -1015,16 +1017,24 @@ export default function CoachDashboardPage() {
   };
 
   const handleSort = (key: SortKey) => {
+    // Numeric columns default to "desc", text columns default to "asc"
+    const numericKeys: SortKey[] = ["rapid24h", "rapid7d", "blitz24h", "blitz7d", "rapidRating", "blitzRating", "puzzleRating", "homeworkPct", "puzzleDelta3d", "puzzleDelta7d", "lastActive"];
+    const defaultDir: "asc" | "desc" = numericKeys.includes(key) ? "desc" : "asc";
+
     if (sortKey === key) {
       setSortDir(sortDir === "asc" ? "desc" : "asc");
     } else {
       setSortKey(key);
-      setSortDir("asc");
+      setSortDir(defaultDir);
     }
   };
 
-  // Filter out hidden students
-  const displayedStudents = students.filter((s) => !hiddenIds.includes(s.id));
+  // Filter out hidden students and by platform
+  const displayedStudents = students.filter((s) => {
+    if (hiddenIds.includes(s.id)) return false;
+    if (platformFilter === "all") return true;
+    return s.platform === platformFilter;
+  });
 
   const sortedStudents = useMemo(() => {
     const sorted = [...displayedStudents];
@@ -1284,6 +1294,15 @@ export default function CoachDashboardPage() {
             </div>
 
             <div className="flex items-center gap-2">
+              <select
+                value={platformFilter}
+                onChange={(e) => setPlatformFilter(e.target.value as "all" | "lichess" | "chesscom")}
+                className="h-9 px-3 text-sm rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--background))] text-[hsl(var(--foreground))] focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))] focus:ring-offset-2 focus:ring-offset-[hsl(var(--background))] transition-colors"
+              >
+                <option value="all">All</option>
+                <option value="lichess">Lichess</option>
+                <option value="chesscom">Chess.com</option>
+              </select>
               <div className="group flex items-center w-[200px] sm:w-[220px] focus-within:w-[320px] sm:focus-within:w-[420px] transition-[width] duration-200">
                 <Input
                   type="text"
@@ -1347,20 +1366,70 @@ export default function CoachDashboardPage() {
                   )}
                 </span>
               </th>
-              <th className="border-r border-[hsl(var(--border))] px-3 py-2 text-left text-xs font-semibold text-[hsl(var(--foreground))] uppercase tracking-wide">
-                Platform
+              <th
+                className="border-r border-[hsl(var(--border))] px-3 py-2 text-left text-xs font-semibold text-[hsl(var(--foreground))] uppercase tracking-wide cursor-pointer hover:bg-[hsl(var(--muted))] transition-colors"
+                onClick={() => handleSort("platform")}
+              >
+                <span className="inline-flex items-center">
+                  Platform
+                  {sortKey === "platform" && (
+                    <span className="ml-1.5 text-xs text-[hsl(var(--muted-foreground))]">
+                      {sortDir === "asc" ? "▲" : "▼"}
+                    </span>
+                  )}
+                </span>
               </th>
-              <th className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-xs font-semibold text-[hsl(var(--foreground))] uppercase tracking-wide">
-                Rapid 24h
+              <th
+                className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-xs font-semibold text-[hsl(var(--foreground))] uppercase tracking-wide cursor-pointer hover:bg-[hsl(var(--muted))] transition-colors"
+                onClick={() => handleSort("rapid24h")}
+              >
+                <span className="inline-flex items-center justify-end">
+                  Rapid 24h
+                  {sortKey === "rapid24h" && (
+                    <span className="ml-1.5 text-xs text-[hsl(var(--muted-foreground))]">
+                      {sortDir === "asc" ? "▲" : "▼"}
+                    </span>
+                  )}
+                </span>
               </th>
-              <th className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-xs font-semibold text-[hsl(var(--foreground))] uppercase tracking-wide">
-                Rapid 7d
+              <th
+                className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-xs font-semibold text-[hsl(var(--foreground))] uppercase tracking-wide cursor-pointer hover:bg-[hsl(var(--muted))] transition-colors"
+                onClick={() => handleSort("rapid7d")}
+              >
+                <span className="inline-flex items-center justify-end">
+                  Rapid 7d
+                  {sortKey === "rapid7d" && (
+                    <span className="ml-1.5 text-xs text-[hsl(var(--muted-foreground))]">
+                      {sortDir === "asc" ? "▲" : "▼"}
+                    </span>
+                  )}
+                </span>
               </th>
-              <th className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-xs font-semibold text-[hsl(var(--foreground))] uppercase tracking-wide">
-                Blitz 24h
+              <th
+                className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-xs font-semibold text-[hsl(var(--foreground))] uppercase tracking-wide cursor-pointer hover:bg-[hsl(var(--muted))] transition-colors"
+                onClick={() => handleSort("blitz24h")}
+              >
+                <span className="inline-flex items-center justify-end">
+                  Blitz 24h
+                  {sortKey === "blitz24h" && (
+                    <span className="ml-1.5 text-xs text-[hsl(var(--muted-foreground))]">
+                      {sortDir === "asc" ? "▲" : "▼"}
+                    </span>
+                  )}
+                </span>
               </th>
-              <th className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-xs font-semibold text-[hsl(var(--foreground))] uppercase tracking-wide">
-                Blitz 7d
+              <th
+                className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-xs font-semibold text-[hsl(var(--foreground))] uppercase tracking-wide cursor-pointer hover:bg-[hsl(var(--muted))] transition-colors"
+                onClick={() => handleSort("blitz7d")}
+              >
+                <span className="inline-flex items-center justify-end">
+                  Blitz 7d
+                  {sortKey === "blitz7d" && (
+                    <span className="ml-1.5 text-xs text-[hsl(var(--muted-foreground))]">
+                      {sortDir === "asc" ? "▲" : "▼"}
+                    </span>
+                  )}
+                </span>
               </th>
               <th
                 className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-xs font-semibold text-[hsl(var(--foreground))] uppercase tracking-wide cursor-pointer hover:bg-[hsl(var(--muted))] transition-colors"
@@ -1388,11 +1457,31 @@ export default function CoachDashboardPage() {
                   )}
                 </span>
               </th>
-              <th className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-xs font-semibold text-[hsl(var(--foreground))] uppercase tracking-wide">
-                Puzzles (3d)
+              <th
+                className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-xs font-semibold text-[hsl(var(--foreground))] uppercase tracking-wide cursor-pointer hover:bg-[hsl(var(--muted))] transition-colors"
+                onClick={() => handleSort("puzzleDelta3d")}
+              >
+                <span className="inline-flex items-center justify-end">
+                  Puzzles (3d)
+                  {sortKey === "puzzleDelta3d" && (
+                    <span className="ml-1.5 text-xs text-[hsl(var(--muted-foreground))]">
+                      {sortDir === "asc" ? "▲" : "▼"}
+                    </span>
+                  )}
+                </span>
               </th>
-              <th className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-xs font-semibold text-[hsl(var(--foreground))] uppercase tracking-wide">
-                Puzzles (7d)
+              <th
+                className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-xs font-semibold text-[hsl(var(--foreground))] uppercase tracking-wide cursor-pointer hover:bg-[hsl(var(--muted))] transition-colors"
+                onClick={() => handleSort("puzzleDelta7d")}
+              >
+                <span className="inline-flex items-center justify-end">
+                  Puzzles (7d)
+                  {sortKey === "puzzleDelta7d" && (
+                    <span className="ml-1.5 text-xs text-[hsl(var(--muted-foreground))]">
+                      {sortDir === "asc" ? "▲" : "▼"}
+                    </span>
+                  )}
+                </span>
               </th>
               <th
                 className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-xs font-semibold text-[hsl(var(--foreground))] uppercase tracking-wide cursor-pointer hover:bg-[hsl(var(--muted))] transition-colors"
@@ -1407,8 +1496,18 @@ export default function CoachDashboardPage() {
                   )}
                 </span>
               </th>
-              <th className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-xs font-semibold text-[hsl(var(--foreground))] uppercase tracking-wide">
-                Homework %
+              <th
+                className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-xs font-semibold text-[hsl(var(--foreground))] uppercase tracking-wide cursor-pointer hover:bg-[hsl(var(--muted))] transition-colors"
+                onClick={() => handleSort("homeworkPct")}
+              >
+                <span className="inline-flex items-center justify-end">
+                  Homework %
+                  {sortKey === "homeworkPct" && (
+                    <span className="ml-1.5 text-xs text-[hsl(var(--muted-foreground))]">
+                      {sortDir === "asc" ? "▲" : "▼"}
+                    </span>
+                  )}
+                </span>
               </th>
               <th
                 className="border-r border-[hsl(var(--border))] px-3 py-2 text-left text-xs font-semibold text-[hsl(var(--foreground))] uppercase tracking-wide cursor-pointer hover:bg-[hsl(var(--muted))] transition-colors"

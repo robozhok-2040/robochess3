@@ -2,21 +2,21 @@ import { PageShell } from "@/components/layout/page-shell";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Button } from "@/components/ui/button";
 
-export default function StudentGamificationPage() {
+export default function StudentVisualizationPage() {
   return (
     <PageShell
-      title="Gamification"
-      description="Earn rewards, badges, and level up your chess skills"
+      title="Visualization"
+      description="Visualize your games and analyze positions"
     >
       <EmptyState
-        title="Gamification Coming Soon"
-        description="In the MVP, we will add gamification features including XP, badges, achievements, and leaderboards to make learning fun and engaging."
+        title="Visualization Coming Soon"
+        description="In the MVP, we will add visualization tools to analyze your games, review key positions, and understand strategic patterns."
         action={
           <Button variant="outline" disabled>
             Coming Soon
           </Button>
         }
-        icon="🎮"
+        icon="🎨"
       />
     </PageShell>
   );

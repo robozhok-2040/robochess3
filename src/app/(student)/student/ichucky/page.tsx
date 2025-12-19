@@ -2,21 +2,21 @@ import { PageShell } from "@/components/layout/page-shell";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Button } from "@/components/ui/button";
 
-export default function CoachMySitePage() {
+export default function StudentIChuckyPage() {
   return (
     <PageShell
-      title="MySite"
-      description="Customize and manage your coaching website"
+      title="iChucky"
+      description="Interactive chess learning experience"
     >
       <EmptyState
-        title="MySite Coming Soon"
-        description="In the MVP, we will add tools to create and customize your personal coaching website with your branding and content."
+        title="iChucky Coming Soon"
+        description="In the MVP, we will add iChucky - an interactive learning module with guided lessons and interactive exercises."
         action={
           <Button variant="outline" disabled>
             Coming Soon
           </Button>
         }
-        icon="🌐"
+        icon="🤖"
       />
     </PageShell>
   );

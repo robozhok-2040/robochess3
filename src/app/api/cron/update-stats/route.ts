@@ -67,6 +67,7 @@ export async function GET(request: NextRequest) {
 
     // 2. Process each student with rate limiting
     for (const profile of lichessProfiles) {
+      if (!profile || !profile.username) continue;
       try {
         // Fetch Lichess data
         const response = await fetch(
