@@ -1,30 +1,46 @@
 "use client";
 
 import { useState, useMemo, useEffect } from "react";
-import { createClient } from "@/utils/supabase/client";
+import { useRouter } from "next/navigation";
 import { scheduleLichessRequest } from "@/lib/rateLimiter";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 
-type Student = {
+// API Response type - matches the structure from /api/coach/students
+interface ApiStudent {
   id: string;
   nickname: string;
+  stats: {
+    rapidRating: number | null;
+    blitzRating: number | null;
+    puzzleRating: number | null;
+    rapidGames24h: number;
+    rapidGames7d: number;
+    blitzGames24h: number;
+    blitzGames7d: number;
+    puzzles3d: number; // Maps from DB column puzzles_24h
+    puzzles7d: number;
+    puzzle_total: number;
+  };
+  platform?: string;
+  platform_username?: string;
+  avatar_url?: string;
+  last_active?: string | null;
+}
+
+// Internal Student type for table display (includes additional fields with defaults)
+type Student = ApiStudent & {
   platform: "lichess" | "chesscom";
   handle: string;
   rapidGames24h: number;
   rapidGames7d: number;
   blitzGames24h: number;
   blitzGames7d: number;
-  rapidRating: number | null;
-  blitzRating: number | null;
-  puzzlesSolved24h: number;
-  puzzleRating: number | null;
   homeworkCompletionPct: number;
-  seenAt: number | null; // Timestamp in milliseconds from Lichess API
-  puzzleDelta3d: number | null; // Difference from 3 days ago
-  puzzleDelta7d: number | null; // Difference from 7 days ago
+  puzzleDelta3d: number | null; // Use puzzles3d from API
+  puzzleDelta7d: number | null;
 };
 
 type SortKey =
@@ -44,6 +60,7 @@ type SortKey =
   | "lastActive";
 
 export default function CoachDashboardPage() {
+  const router = useRouter();
   const [students, setStudents] = useState<Student[]>([]);
   const [hiddenIds, setHiddenIds] = useState<string[]>([]);
   const [nicknameInput, setNicknameInput] = useState("");
@@ -53,6 +70,8 @@ export default function CoachDashboardPage() {
   const [sortKey, setSortKey] = useState<SortKey>("nickname");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [platformFilter, setPlatformFilter] = useState<"all" | "lichess" | "chesscom">("all");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   // Helper function to format relative time and determine traffic light color
   function formatLastActive(seenAt: number | null): { label: string; color: string } {
@@ -93,40 +112,12 @@ export default function CoachDashboardPage() {
     return { label, color };
   }
 
-  // Helper to parse last active label and return badge variant
-  function parseLastActive(seenAt: number | null): { label: string; variant: "success" | "warning" | "muted" } {
-    if (seenAt === null) {
-      return { label: "No data", variant: "muted" };
+  // Helper to get badge variant and label from lastActiveStatus
+  function getStatusBadge(status: 'green' | 'grey'): { label: string; variant: "success" | "warning" | "muted" } {
+    if (status === "green") {
+      return { label: "Active", variant: "success" };
     }
-
-    const now = Date.now();
-    const diffMs = now - seenAt;
-    const diffHours = diffMs / (1000 * 60 * 60);
-    const diffDays = diffMs / (1000 * 60 * 60 * 24);
-
-    let label: string;
-    let variant: "success" | "warning" | "muted";
-
-    if (diffHours < 24) {
-      variant = "success";
-      if (diffHours < 1) {
-        const minutes = Math.floor(diffMs / (1000 * 60));
-        label = `${minutes}m`;
-      } else {
-        const hours = Math.floor(diffHours);
-        label = `${hours}h`;
-      }
-    } else if (diffDays <= 7) {
-      variant = "warning";
-      const days = Math.floor(diffDays);
-      label = `${days}d`;
-    } else {
-      variant = "muted";
-      const days = Math.floor(diffDays);
-      label = `${days}d`;
-    }
-
-    return { label, variant };
+    return { label: "Inactive", variant: "muted" };
   }
 
   // Update student stats from live APIs
@@ -235,10 +226,12 @@ export default function CoachDashboardPage() {
           if (result && result.updates) {
             return {
               ...student,
-              rapidRating: result.updates.rapidRating ?? student.rapidRating,
-              blitzRating: result.updates.blitzRating ?? student.blitzRating,
-              puzzleRating: result.updates.puzzleRating ?? student.puzzleRating,
-              seenAt: result.updates.seenAt ?? student.seenAt,
+              stats: {
+                ...(student.stats || {}),
+                rapidRating: result.updates.rapidRating ?? student.stats?.rapidRating,
+                blitzRating: result.updates.blitzRating ?? student.stats?.blitzRating,
+                puzzleRating: result.updates.puzzleRating ?? student.stats?.puzzleRating,
+              },
             };
           }
           return student;
@@ -611,21 +604,14 @@ export default function CoachDashboardPage() {
           if (result && result.puzzles24h !== null) {
             console.log(`[PUZZLES] Updating student ${student.id} with ${result.puzzles24h} puzzles`);
             
-            // Recalculate deltas based on new puzzle total
-            // Delta = newCurrent - oldSnapshot, where oldSnapshot = oldCurrent - oldDelta
-            const oldCurrent = student.puzzlesSolved24h;
-            const newCurrent = result.puzzles24h;
-            const deltaChange = newCurrent - oldCurrent;
-            
-            // Recalculate deltas: newDelta = oldDelta + (newCurrent - oldCurrent)
-            const newDelta3d = student.puzzleDelta3d !== null ? student.puzzleDelta3d + deltaChange : null;
-            const newDelta7d = student.puzzleDelta7d !== null ? student.puzzleDelta7d + deltaChange : null;
-            
+            // Update puzzles3d with new value
             return {
               ...student,
-              puzzlesSolved24h: result.puzzles24h,
-              puzzleDelta3d: newDelta3d,
-              puzzleDelta7d: newDelta7d,
+              stats: {
+                ...student.stats,
+                puzzles3d: result.puzzles24h,
+              },
+              puzzleDelta3d: result.puzzles24h, // Also update puzzleDelta3d for sorting
             };
           }
           return student;
@@ -764,116 +750,54 @@ export default function CoachDashboardPage() {
     }
   }
 
-  // Fetch students from Supabase on mount
+  // Fetch students from API on mount
   useEffect(() => {
     async function fetchStudents() {
+      setLoading(true);
+      setError(null);
+      
       try {
-        const supabase = createClient();
-        const { data, error } = await supabase
-          .from("profiles")
-          .select("*, platform_connections(*), stats_snapshots(*)")
-          .eq("role", "student");
-
-        if (error) {
-          console.error("Error fetching students:", error);
-          return;
+        const response = await fetch("/api/coach/students");
+        
+        if (!response.ok) {
+          throw new Error(`Failed to fetch students: ${response.statusText}`);
+        }
+        
+        const apiData: ApiStudent[] = await response.json();
+        
+        if (!Array.isArray(apiData)) {
+          throw new Error("Invalid API response format");
         }
 
-        if (!data) return;
-
-        // Helper function to find closest snapshot to a target date
-        const findClosestSnapshot = (snapshots: any[], targetDaysAgo: number) => {
-          if (!snapshots || snapshots.length === 0) return null;
-
-          const targetDate = new Date();
-          targetDate.setDate(targetDate.getDate() - targetDaysAgo);
-          targetDate.setHours(0, 0, 0, 0);
-          const targetTime = targetDate.getTime();
-
-          // Find snapshot closest to target date
-          let closest: any = null;
-          let minDiff = Infinity;
-
-          for (const snapshot of snapshots) {
-            if (!snapshot.created_at) continue;
-            const snapshotTime = new Date(snapshot.created_at).getTime();
-            const diff = Math.abs(snapshotTime - targetTime);
-            if (diff < minDiff) {
-              minDiff = diff;
-              closest = snapshot;
-            }
-          }
-
-          // Only return if snapshot is within 2 days of target (to avoid using very old data)
-          const maxAllowedDiff = 2 * 24 * 60 * 60 * 1000; // 2 days in ms
-          return minDiff <= maxAllowedDiff ? closest : null;
-        };
-
-        // Map DB results to Student type
-        const mappedStudents: Student[] = data.map((profile: any) => {
-          // Get platform connection (use first one, default to lichess)
-          const platformConn = profile.platform_connections?.[0];
-          const platform = (platformConn?.platform || "lichess") as "lichess" | "chesscom";
-          const handle = platformConn?.platform_username || profile.full_name || profile.name || "";
-
-          // Get all stats snapshots (sorted by created_at desc)
-          const statsSnapshots = (profile.stats_snapshots || []).sort((a: any, b: any) => {
-            const dateA = a.created_at ? new Date(a.created_at).getTime() : 0;
-            const dateB = b.created_at ? new Date(b.created_at).getTime() : 0;
-            return dateB - dateA;
-          });
-
-          const latestStats = statsSnapshots.length > 0 ? statsSnapshots[0] : null;
-
-          // Get current puzzle_total from latest snapshot (will be updated with live data later)
-          const currentPuzzleTotal = latestStats?.puzzle_total ?? 0;
-
-          // Find snapshots from 3 and 7 days ago
-          const snapshot3d = findClosestSnapshot(statsSnapshots, 3);
-          const snapshot7d = findClosestSnapshot(statsSnapshots, 7);
-
-          // Calculate deltas (null if snapshot not found)
-          const puzzleDelta3d =
-            snapshot3d && snapshot3d.puzzle_total !== null && snapshot3d.puzzle_total !== undefined
-              ? currentPuzzleTotal - snapshot3d.puzzle_total
-              : null;
-          const puzzleDelta7d =
-            snapshot7d && snapshot7d.puzzle_total !== null && snapshot7d.puzzle_total !== undefined
-              ? currentPuzzleTotal - snapshot7d.puzzle_total
-              : null;
-
+        // Map API response to Student type with defaults for missing fields
+        const mappedStudents: Student[] = apiData.map((item: ApiStudent) => {
+          // Compute lastActiveStatus: 'green' if active in last 24h (has games or puzzles), 'grey' otherwise
+          const hasActivity24h = (item.stats?.rapidGames24h ?? 0) + (item.stats?.blitzGames24h ?? 0) + (item.stats?.puzzles3d ?? 0) > 0;
+          const lastActiveStatus: 'green' | 'grey' = hasActivity24h ? 'green' : 'grey';
+          
           return {
-            id: profile.id,
-            nickname: profile.full_name || profile.name || "Unnamed",
-            platform,
-            handle,
-            rapidGames24h: latestStats?.games_played_24h || 0,
-            rapidGames7d: latestStats?.games_played_7d || 0,
-            blitzGames24h: 0, // TODO: Split from total games if needed
-            blitzGames7d: 0, // TODO: Split from total games if needed
-            rapidRating: latestStats?.rating_rapid ?? null,
-            blitzRating: latestStats?.rating_blitz ?? null,
-            puzzlesSolved24h: currentPuzzleTotal, // Will be updated with live data
-            puzzleRating: latestStats?.puzzle_rating ?? null,
-            homeworkCompletionPct: 0,
-            seenAt: null, // Will be updated from live API
-            puzzleDelta3d,
-            puzzleDelta7d,
+            ...item,
+            lastActiveStatus,
+            platform: (item.platform === "lichess" || item.platform === "chesscom" ? item.platform : "lichess") as "lichess" | "chesscom",
+            handle: item.platform_username || item.nickname, // Use platform_username if available, otherwise nickname
+            // CRITICAL: Read from item.stats (the API response structure)
+            rapidGames24h: item.stats?.rapidGames24h ?? 0,
+            rapidGames7d: item.stats?.rapidGames7d ?? 0,
+            blitzGames24h: item.stats?.blitzGames24h ?? 0,
+            blitzGames7d: item.stats?.blitzGames7d ?? 0,
+            homeworkCompletionPct: 0, // API doesn't provide this yet
+            // Map puzzles3d to puzzleDelta3d for display in Puzzles (3d) column
+            puzzleDelta3d: item.stats?.puzzles3d ?? null,
+            puzzleDelta7d: item.stats?.puzzles7d ?? null,
           };
         });
 
         setStudents(mappedStudents);
-
-        // Trigger stats update after students are loaded
-        await updateStudentStats(mappedStudents);
-        
-        // Fetch recent activity and puzzle stats in parallel (both are independent)
-        await Promise.all([
-          fetchRecentActivity(mappedStudents),
-          fetchPuzzleStats(mappedStudents),
-        ]);
-      } catch (err) {
-        console.error("Error loading students:", err);
+      } catch (error) {
+        console.error("Error fetching students:", error);
+        setError(error instanceof Error ? error.message : "Failed to load students");
+      } finally {
+        setLoading(false);
       }
     }
 
@@ -964,29 +888,31 @@ export default function CoachDashboardPage() {
 
   // Delete student permanently from database
   const handleDelete = async (id: string) => {
-    if (!confirm("Ви точно хочете видалити цього учня з Бази Даних назавжди?")) {
+    if (!confirm("Are you sure you want to permanently delete this student from the database?")) {
       return;
     }
 
     try {
-      const supabase = createClient();
+      // Delete via API route (uses Prisma)
+      const response = await fetch(`/api/coach/student/${id}`, {
+        method: "DELETE",
+      });
 
-      // 1. Delete from Supabase (profiles table)
-      // Note: This should cascade delete related records (platform_connections, stats_snapshots)
-      // if foreign key constraints are set up properly
-      const { error } = await supabase.from("profiles").delete().eq("id", id);
-
-      if (error) {
-        throw error;
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: "Unknown error" }));
+        throw new Error(errorData.error || `HTTP ${response.status}`);
       }
 
-      // 2. Remove from local UI (only if DB delete worked)
+      // Remove from local UI state immediately
       setStudents((prev) => prev.filter((student) => student.id !== id));
+
+      // Refresh router cache to ensure consistency
+      router.refresh();
 
       console.log(`Successfully deleted student ${id} from database`);
     } catch (err) {
       console.error("Error deleting student:", err);
-      alert("Помилка видалення! Перевірте консоль.");
+      alert(`Failed to delete student: ${err instanceof Error ? err.message : "Check console for details"}`);
     }
   };
 
@@ -1004,10 +930,11 @@ export default function CoachDashboardPage() {
       console.log("Stats update completed:", result);
 
       // Show success message
-      alert(`Stats updated successfully! Processed ${result.processed || 0} students.`);
+      const updateCount = result.summary?.includes("Updated") ? result.details?.length || 0 : result.updated || 0;
+      alert(`Stats updated successfully! Updated ${updateCount} students.`);
 
-      // Reload the page to show updated data
-      window.location.reload();
+      // Refresh the page data using Next.js router
+      router.refresh();
     } catch (error) {
       console.error("Error updating stats:", error);
       alert(`Failed to update stats: ${error instanceof Error ? error.message : "Unknown error"}`);
@@ -1074,35 +1001,37 @@ export default function CoachDashboardPage() {
           bVal = b.blitzGames7d;
           break;
         case "rapidRating":
-          aVal = a.rapidRating;
-          bVal = b.rapidRating;
+          aVal = a.stats?.rapidRating;
+          bVal = b.stats?.rapidRating;
           break;
         case "blitzRating":
-          aVal = a.blitzRating;
-          bVal = b.blitzRating;
+          aVal = a.stats?.blitzRating;
+          bVal = b.stats?.blitzRating;
           break;
         case "puzzleDelta3d":
-          aVal = a.puzzleDelta3d;
-          bVal = b.puzzleDelta3d;
+          aVal = a.stats?.puzzles3d;
+          bVal = b.stats?.puzzles3d;
           break;
         case "puzzleDelta7d":
           aVal = a.puzzleDelta7d;
           bVal = b.puzzleDelta7d;
           break;
         case "puzzleRating":
-          aVal = a.puzzleRating;
-          bVal = b.puzzleRating;
+          aVal = a.stats?.puzzleRating;
+          bVal = b.stats?.puzzleRating;
           break;
         case "homeworkPct":
           aVal = a.homeworkCompletionPct;
           bVal = b.homeworkCompletionPct;
           break;
         case "lastActive":
-          // Sort by minutes since last active (lower = more recent)
-          // Missing/null treated as very large (inactive)
-          const now = Date.now();
-          aVal = a.seenAt !== null ? (now - a.seenAt) / (1000 * 60) : Infinity;
-          bVal = b.seenAt !== null ? (now - b.seenAt) / (1000 * 60) : Infinity;
+          // Sort by lastActiveStatus: 'green' (active) comes before 'grey' (inactive)
+          // For ascending: green = 0, grey = 1
+          // For descending: grey = 0, green = 1
+          const greenValue = 0;
+          const greyValue = 1;
+          aVal = a.lastActiveStatus === "green" ? greenValue : greyValue;
+          bVal = b.lastActiveStatus === "green" ? greenValue : greyValue;
           break;
         default:
           return 0;
@@ -1136,18 +1065,13 @@ export default function CoachDashboardPage() {
   const kpiMetrics = useMemo(() => {
     const total = sortedStudents.length;
 
-    // Count active students (seen within last 24 hours)
-    const now = Date.now();
-    const active24h = sortedStudents.filter((student) => {
-      if (student.seenAt === null) return false;
-      const diffHours = (now - student.seenAt) / (1000 * 60 * 60);
-      return diffHours < 24;
-    }).length;
+    // Count active students (based on lastActiveStatus)
+    const active24h = sortedStudents.filter((student) => student.lastActiveStatus === "green").length;
 
     // Calculate average Rapid rating
     const rapidRatings = sortedStudents
-      .map((s) => s.rapidRating)
-      .filter((r): r is number => r !== null);
+      .map((s) => s.stats?.rapidRating ?? null)
+      .filter((r): r is number => r !== null && r !== 0);
     const avgRapid =
       rapidRatings.length > 0
         ? Math.round(rapidRatings.reduce((sum, r) => sum + r, 0) / rapidRatings.length)
@@ -1155,8 +1079,8 @@ export default function CoachDashboardPage() {
 
     // Calculate average Blitz rating
     const blitzRatings = sortedStudents
-      .map((s) => s.blitzRating)
-      .filter((r): r is number => r !== null);
+      .map((s) => s.stats?.blitzRating ?? null)
+      .filter((r): r is number => r !== null && r !== 0);
     const avgBlitz =
       blitzRatings.length > 0
         ? Math.round(blitzRatings.reduce((sum, r) => sum + r, 0) / blitzRatings.length)
@@ -1292,6 +1216,11 @@ export default function CoachDashboardPage() {
               <CardTitle>Students</CardTitle>
               <CardDescription className="hidden sm:block">Track progress and activity</CardDescription>
             </div>
+            {error && (
+              <div className="w-full sm:w-auto mb-2 sm:mb-0 p-3 rounded-lg border border-red-200 bg-red-50 dark:border-red-800 dark:bg-red-950/30 text-sm text-red-700 dark:text-red-400">
+                Error: {error}
+              </div>
+            )}
 
             <div className="flex items-center gap-2">
               <select
@@ -1346,9 +1275,14 @@ export default function CoachDashboardPage() {
               </Button>
             </div>
           )}
-          <div className="overflow-x-auto tabular-nums">
-            <table className="w-full border-collapse text-sm">
-          <thead className="sticky top-0 z-10 bg-[hsl(var(--card))] backdrop-blur border-b border-[hsl(var(--border))]">
+          {loading ? (
+            <div className="p-12 text-center text-[hsl(var(--muted-foreground))]">
+              Loading students...
+            </div>
+          ) : (
+            <div className="overflow-x-auto tabular-nums">
+              <table className="w-full border-collapse text-sm">
+            <thead className="sticky top-0 z-10 bg-[hsl(var(--card))] backdrop-blur border-b border-[hsl(var(--border))]">
             <tr>
               <th className="border-r border-[hsl(var(--border))] px-3 py-2 text-center text-xs font-semibold text-[hsl(var(--foreground))] uppercase tracking-wide">
                 #
@@ -1529,7 +1463,7 @@ export default function CoachDashboardPage() {
           </thead>
           <tbody>
             {sortedStudents.map((student, index) => {
-              const { label: lastActiveLabel, variant: lastActiveVariant } = parseLastActive(student.seenAt);
+              const { label: lastActiveLabel, variant: lastActiveVariant } = getStatusBadge(student.lastActiveStatus);
               return (
                 <tr key={student.id} className="border-b border-[hsl(var(--border))] hover:bg-[hsl(var(--muted))] transition-colors bg-[hsl(var(--card))]">
                   <td className="border-r border-[hsl(var(--border))] px-3 py-2 text-center text-sm text-[hsl(var(--foreground))] tabular-nums">
@@ -1554,18 +1488,18 @@ export default function CoachDashboardPage() {
                     {student.blitzGames7d}
                   </td>
                   <td className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-sm text-[hsl(var(--foreground))] tabular-nums">
-                    {student.rapidRating !== null ? student.rapidRating : <span className="text-[hsl(var(--muted-foreground))]">—</span>}
+                    {student.stats?.rapidRating !== null && student.stats?.rapidRating !== undefined && student.stats?.rapidRating !== 0 ? student.stats?.rapidRating : <span className="text-[hsl(var(--muted-foreground))]">—</span>}
                   </td>
                   <td className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-sm text-[hsl(var(--foreground))] tabular-nums">
-                    {student.blitzRating !== null ? student.blitzRating : <span className="text-[hsl(var(--muted-foreground))]">—</span>}
+                    {student.stats?.blitzRating !== null && student.stats?.blitzRating !== undefined && student.stats?.blitzRating !== 0 ? student.stats?.blitzRating : <span className="text-[hsl(var(--muted-foreground))]">—</span>}
                   </td>
                   <td className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-sm tabular-nums">
-                    {student.puzzleDelta3d !== null ? (
-                      <span className={student.puzzleDelta3d > 0 ? "text-green-600 dark:text-green-400 font-semibold" : "text-[hsl(var(--muted-foreground))]"}>
-                        {student.puzzleDelta3d > 0 ? "+" : ""}{student.puzzleDelta3d}
+                    {student.stats?.puzzles3d !== null && student.stats?.puzzles3d !== undefined ? (
+                      <span className={(student.stats?.puzzles3d ?? 0) > 0 ? "text-green-600 dark:text-green-400 font-semibold" : "text-[hsl(var(--foreground))]"}>
+                        {student.stats?.puzzles3d}
                       </span>
                     ) : (
-                      <span className="text-[hsl(var(--muted-foreground))]">—</span>
+                      <span className="text-[hsl(var(--foreground))]">0</span>
                     )}
                   </td>
                   <td className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-sm tabular-nums">
@@ -1578,7 +1512,7 @@ export default function CoachDashboardPage() {
                     )}
                   </td>
                   <td className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-sm text-[hsl(var(--foreground))] tabular-nums">
-                    {student.puzzleRating !== null ? student.puzzleRating : <span className="text-[hsl(var(--muted-foreground))]">—</span>}
+                    {student.stats?.puzzleRating !== null && student.stats?.puzzleRating !== undefined && student.stats?.puzzleRating !== 0 ? student.stats?.puzzleRating : <span className="text-[hsl(var(--muted-foreground))]">—</span>}
                   </td>
                   <td className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-sm text-[hsl(var(--foreground))] tabular-nums">
                     {student.homeworkCompletionPct}%
@@ -1606,11 +1540,7 @@ export default function CoachDashboardPage() {
                         variant="ghost"
                         size="sm"
                         className="h-8 w-8 p-0 text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300"
-                        onClick={() => {
-                          if (confirm("Ви точно хочете видалити цього учня з Бази Даних назавжди?")) {
-                            handleDelete(student.id);
-                          }
-                        }}
+                        onClick={() => handleDelete(student.id)}
                         title="Delete student"
                         aria-label="Delete student"
                       >
@@ -1622,8 +1552,9 @@ export default function CoachDashboardPage() {
               );
             })}
           </tbody>
-            </table>
-          </div>
+              </table>
+            </div>
+          )}
         </CardContent>
       </Card>
       </div>

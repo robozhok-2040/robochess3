@@ -10,6 +10,7 @@
     "db:introspect": "tsx scripts/db_introspect.ts"
   },
   "dependencies": {
+    "@prisma/client": "^5.22.0",
     "@supabase/ssr": "^0.5.1",
     "@supabase/supabase-js": "^2.47.10",
     "bottleneck": "^2.19.5",
@@ -29,6 +30,7 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.0.10",
+    "prisma": "^5.22.0",
     "tailwindcss": "^4",
     "tsx": "^4.21.0",
     "typescript": "^5"

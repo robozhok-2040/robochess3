@@ -1,145 +1,97 @@
-import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@/utils/supabase/server";
+import { NextResponse } from "next/server";
 
-type LichessUser = {
-  perfs?: {
-    rapid?: { rating?: number };
-    blitz?: { rating?: number };
-    puzzle?: { rating?: number; games?: number };
-  };
-};
+import { prisma } from "@/lib/prisma";
 
-// Helper function to delay execution
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+export const dynamic = 'force-dynamic';
 
-export async function GET(request: NextRequest) {
+export async function GET() {
   try {
-    const supabase = await createClient();
+    const students = await prisma.profiles.findMany({
+      where: { role: "student" },
+      include: {
+        platform_connections: { where: { platform: 'lichess' } },
+        stats_snapshots: { orderBy: { captured_at: 'desc' }, take: 1 }
+      }
+    });
 
-    // 1. Fetch all student profiles with their platform connections
-    const { data: profiles, error: profilesError } = await supabase
-      .from("profiles")
-      .select("id, platform_connections(platform, platform_username)")
-      .eq("role", "student");
+    const updates = [];
 
-    if (profilesError) {
-      console.error("Error fetching profiles:", profilesError);
-      return NextResponse.json(
-        { error: "Failed to fetch profiles", details: profilesError.message },
-        { status: 500 }
-      );
-    }
+    for (const student of students) {
+      const connection = student.platform_connections[0];
+      if (!connection?.platform_username) continue;
 
-    if (!profiles || profiles.length === 0) {
-      return NextResponse.json({
-        success: true,
-        message: "No students found",
-        processed: 0,
-        succeeded: 0,
-        failed: 0,
-      });
-    }
-
-    // Filter profiles that have Lichess connections
-    const lichessProfiles = profiles
-      .map((profile: any) => {
-        const platformConnections = profile.platform_connections || [];
-        const lichessConn = platformConnections.find(
-          (conn: any) => conn.platform === "lichess"
-        );
-        if (lichessConn && lichessConn.platform_username) {
-          return {
-            id: profile.id,
-            username: lichessConn.platform_username,
-          };
-        }
-        return null;
-      })
-      .filter((p: any) => p !== null);
-
-    console.log(`[UPDATE-STATS] Found ${lichessProfiles.length} students with Lichess accounts`);
-
-    let succeeded = 0;
-    let failed = 0;
-    const errors: string[] = [];
-
-    // 2. Process each student with rate limiting
-    for (const profile of lichessProfiles) {
-      if (!profile || !profile.username) continue;
       try {
-        // Fetch Lichess data
-        const response = await fetch(
-          `https://lichess.org/api/user/${encodeURIComponent(profile.username)}`,
-          {
-            headers: { Accept: "application/json" },
+        const response = await fetch(`https://lichess.org/api/user/${connection.platform_username}`);
+        if (!response.ok) continue; 
+
+        const data = await response.json();
+
+        const latestSnapshot = student.stats_snapshots[0];
+
+        // --- RAPID CALCULATION ---
+        const currRapid = data.perfs?.rapid?.games ?? 0;
+        const prevRapidTotal = latestSnapshot?.rapid_total ?? 0;
+        
+        // Cold Start: If history is missing/zero, delta is 0 (Calibration run).
+        // Otherwise, calculate real difference.
+        let rapidDelta = 0;
+        if (prevRapidTotal > 0) {
+            rapidDelta = Math.max(0, currRapid - prevRapidTotal);
+        }
+
+        // --- BLITZ CALCULATION ---
+        const currBlitz = data.perfs?.blitz?.games ?? 0;
+        const prevBlitzTotal = latestSnapshot?.blitz_total ?? 0;
+
+        let blitzDelta = 0;
+        if (prevBlitzTotal > 0) {
+            blitzDelta = Math.max(0, currBlitz - prevBlitzTotal);
+        }
+
+        // --- PUZZLE CALCULATION ---
+        const currPuzzle = data.perfs?.puzzle?.games ?? 0;
+        const prevPuzzleTotal = latestSnapshot?.puzzle_total ?? 0;
+
+        let puzzleDelta = 0;
+        if (prevPuzzleTotal > 0) {
+            puzzleDelta = Math.max(0, currPuzzle - prevPuzzleTotal);
+        }
+
+        // --- SAVE NEW SNAPSHOT ---
+        await prisma.stats_snapshots.create({
+          data: {
+            user_id: student.id,
+            source: "lichess", 
+            
+            // RATINGS
+            rapid_rating: data.perfs?.rapid?.rating ?? null,
+            blitz_rating: data.perfs?.blitz?.rating ?? null,
+            puzzle_rating: data.perfs?.puzzle?.rating ?? null,
+
+            // DAILY STATS (deltas)
+            rapid_24h: rapidDelta,
+            blitz_24h: blitzDelta,
+            puzzle_24h: puzzleDelta,
+
+            // LIFETIME ACCUMULATORS (for next delta calculation)
+            rapid_total: currRapid,
+            blitz_total: currBlitz,
+            puzzle_total: currPuzzle,
+            
+            captured_at: new Date()
           }
-        );
+        });
 
-        if (!response.ok) {
-          throw new Error(`Lichess API returned ${response.status}`);
-        }
+        updates.push(`${student.username}: RapidΔ=${rapidDelta}, BlitzΔ=${blitzDelta} (Totals: R=${currRapid}, B=${currBlitz})`);
 
-        const lichessData: LichessUser = await response.json();
-
-        // Extract stats
-        const puzzleTotal = lichessData.perfs?.puzzle?.games ?? 0;
-        const puzzleRating = lichessData.perfs?.puzzle?.rating ?? null;
-        const rapidRating = lichessData.perfs?.rapid?.rating ?? null;
-        const blitzRating = lichessData.perfs?.blitz?.rating ?? null;
-
-        // Insert snapshot
-        const { error: insertError } = await supabase
-          .from("stats_snapshots")
-          .insert({
-            user_id: profile.id,
-            source: "lichess",
-            rating_rapid: rapidRating,
-            rating_blitz: blitzRating,
-            puzzle_rating: puzzleRating,
-            puzzle_total: puzzleTotal,
-            captured_at: new Date().toISOString(),
-          });
-
-        if (insertError) {
-          throw new Error(`Database insert failed: ${insertError.message}`);
-        }
-
-        succeeded++;
-        console.log(
-          `[UPDATE-STATS] ✅ Saved snapshot for ${profile.username} (${profile.id}): ${puzzleTotal} puzzles`
-        );
-
-        // Rate limiting: 1000ms delay between requests
-        if (profile !== lichessProfiles[lichessProfiles.length - 1]) {
-          await delay(1000);
-        }
-      } catch (error) {
-        failed++;
-        const errorMsg = error instanceof Error ? error.message : String(error);
-        errors.push(`${profile.username}: ${errorMsg}`);
-        console.error(`[UPDATE-STATS] ❌ Failed for ${profile.username}:`, errorMsg);
+      } catch (err) {
+        console.error(err);
       }
     }
 
-    return NextResponse.json({
-      success: true,
-      message: `Processed ${lichessProfiles.length} students`,
-      processed: lichessProfiles.length,
-      succeeded,
-      failed,
-      errors: errors.length > 0 ? errors : undefined,
-    });
+    return NextResponse.json({ summary: "Updated", details: updates });
+
   } catch (error) {
-    console.error("[UPDATE-STATS] Fatal error:", error);
-    return NextResponse.json(
-      {
-        success: false,
-        error: error instanceof Error ? error.message : "Unknown error",
-      },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: String(error) }, { status: 500 });
   }
 }
-
