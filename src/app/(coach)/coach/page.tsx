@@ -16,10 +16,10 @@ interface ApiStudent {
     rapidRating: number | null;
     blitzRating: number | null;
     puzzleRating: number | null;
-    rapidGames24h: number;
-    rapidGames7d: number;
-    blitzGames24h: number;
-    blitzGames7d: number;
+    rapidGames24h: number | null;
+    rapidGames7d: number | null;
+    blitzGames24h: number | null;
+    blitzGames7d: number | null;
     puzzles3d: number; // Maps from DB column puzzles_24h
     puzzles7d: number;
     puzzle_total: number;
@@ -28,19 +28,35 @@ interface ApiStudent {
   platform_username?: string;
   avatar_url?: string;
   last_active?: string | null;
+  // Stats freshness metadata (only for lichess/chesscom)
+  statsSource?: "v2" | "none";
+  statsComputedAt?: string | null;
+  lastSyncedAt?: string | null;
+  statsIsStale?: boolean;
+  statsUpdateOk?: boolean | null;
+  statsUpdateErrorCode?: string | null;
+  statsUpdateAttemptAt?: string | null;
 }
 
 // Internal Student type for table display (includes additional fields with defaults)
 type Student = ApiStudent & {
   platform: "lichess" | "chesscom";
   handle: string;
-  rapidGames24h: number;
-  rapidGames7d: number;
-  blitzGames24h: number;
-  blitzGames7d: number;
+  rapidGames24h: number | null;
+  rapidGames7d: number | null;
+  blitzGames24h: number | null;
+  blitzGames7d: number | null;
   homeworkCompletionPct: number;
   puzzleDelta3d: number | null; // Use puzzles3d from API
   puzzleDelta7d: number | null;
+  // Stats freshness metadata (only for lichess/chesscom)
+  statsSource?: "v2" | "none";
+  statsComputedAt?: string | null;
+  lastSyncedAt?: string | null;
+  statsIsStale?: boolean;
+  statsUpdateOk?: boolean | null;
+  statsUpdateErrorCode?: string | null;
+  statsUpdateAttemptAt?: string | null;
 };
 
 type SortKey =
@@ -59,6 +75,76 @@ type SortKey =
   | "homeworkPct"
   | "lastActive";
 
+/**
+ * Format game count for display: null/undefined -> "—", otherwise return number as string
+ */
+function formatCount(value: number | null | undefined): string {
+  if (value === null || value === undefined) {
+    return "—";
+  }
+  return value.toString();
+}
+
+/**
+ * Format date for tooltip display
+ */
+function formatDateForTooltip(dateStr: string | null): string {
+  if (!dateStr) return "No stats computed yet";
+  try {
+    const date = new Date(dateStr);
+    return date.toLocaleString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  } catch {
+    return dateStr;
+  }
+}
+
+/**
+ * Stats freshness badge component
+ */
+function StatsFreshnessBadge({ 
+  isStale, 
+  computedAt, 
+  errorCode, 
+  attemptAt 
+}: { 
+  isStale: boolean; 
+  computedAt: string | null;
+  errorCode?: string | null;
+  attemptAt?: string | null;
+}) {
+  let tooltipText: string;
+  
+  if (errorCode) {
+    // Show error information if error code exists
+    const errorDisplay = errorCode === 'RATE_LIMIT' ? 'RATE_LIMIT' : errorCode;
+    const attemptTime = attemptAt ? formatDateForTooltip(attemptAt) : 'unknown time';
+    tooltipText = `Update failed: ${errorDisplay}. Attempted: ${attemptTime}`;
+  } else if (computedAt) {
+    // Show computed time if available
+    tooltipText = isStale
+      ? `Stats may be outdated. Last computed: ${formatDateForTooltip(computedAt)}`
+      : `Last computed: ${formatDateForTooltip(computedAt)}`;
+  } else {
+    tooltipText = "No stats computed yet";
+  }
+
+  return (
+    <Badge
+      variant={isStale ? "warning" : "muted"}
+      className="text-xs px-1.5 py-0"
+      title={tooltipText}
+    >
+      {isStale ? "Stale" : "Fresh"}
+    </Badge>
+  );
+}
+
 export default function CoachDashboardPage() {
   const router = useRouter();
   const [students, setStudents] = useState<Student[]>([]);
@@ -67,6 +153,7 @@ export default function CoachDashboardPage() {
   const [isAdding, setIsAdding] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isUpdatingStats, setIsUpdatingStats] = useState(false);
+  const [updateStatsStatus, setUpdateStatsStatus] = useState<string | null>(null);
   const [sortKey, setSortKey] = useState<SortKey>("nickname");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [platformFilter, setPlatformFilter] = useState<"all" | "lichess" | "chesscom">("all");
@@ -750,7 +837,7 @@ export default function CoachDashboardPage() {
     }
   }
 
-  // Fetch students from API on mount
+  // Fetch students from API on mount and start scheduler
   useEffect(() => {
     async function fetchStudents() {
       setLoading(true);
@@ -781,10 +868,11 @@ export default function CoachDashboardPage() {
             platform: (item.platform === "lichess" || item.platform === "chesscom" ? item.platform : "lichess") as "lichess" | "chesscom",
             handle: item.platform_username || item.nickname, // Use platform_username if available, otherwise nickname
             // CRITICAL: Read from item.stats (the API response structure)
-            rapidGames24h: item.stats?.rapidGames24h ?? 0,
-            rapidGames7d: item.stats?.rapidGames7d ?? 0,
-            blitzGames24h: item.stats?.blitzGames24h ?? 0,
-            blitzGames7d: item.stats?.blitzGames7d ?? 0,
+            // Preserve nulls from API for proper "—" display
+            rapidGames24h: item.stats?.rapidGames24h ?? null,
+            rapidGames7d: item.stats?.rapidGames7d ?? null,
+            blitzGames24h: item.stats?.blitzGames24h ?? null,
+            blitzGames7d: item.stats?.blitzGames7d ?? null,
             homeworkCompletionPct: 0, // API doesn't provide this yet
             // Map puzzles3d to puzzleDelta3d for display in Puzzles (3d) column
             puzzleDelta3d: item.stats?.puzzles3d ?? null,
@@ -800,6 +888,19 @@ export default function CoachDashboardPage() {
         setLoading(false);
       }
     }
+
+    // Start the scheduler on dashboard load (singleton guard ensures it only runs once)
+    fetch("/api/_boot")
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.ok) {
+          console.log("[BOOT] Scheduler started");
+        }
+      })
+      .catch((error) => {
+        // Non-fatal: scheduler may have already started
+        console.warn("[BOOT] Failed to start scheduler (may already be running):", error);
+      });
 
     fetchStudents();
   }, []);
@@ -918,8 +1019,11 @@ export default function CoachDashboardPage() {
 
   const handleUpdateStats = async () => {
     setIsUpdatingStats(true);
+    setUpdateStatsStatus("Updating...");
+    
     try {
-      const response = await fetch("/api/cron/update-stats");
+      // Call v2 stats endpoint (replaces legacy /api/cron/update-stats)
+      const response = await fetch("/api/cron/update-stats-v2?limit=100&offset=0");
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({ error: "Unknown error" }));
@@ -927,17 +1031,54 @@ export default function CoachDashboardPage() {
       }
 
       const result = await response.json();
-      console.log("Stats update completed:", result);
+      console.log("Stats v2 update completed:", result);
 
-      // Show success message
-      const updateCount = result.summary?.includes("Updated") ? result.details?.length || 0 : result.updated || 0;
-      alert(`Stats updated successfully! Updated ${updateCount} students.`);
+      // Update status message
+      const processed = result.processed || 0;
+      const total = result.total || 0;
+      const errors = result.errors?.length || 0;
+      setUpdateStatsStatus(`Updated: processed ${processed} / total ${total}, errors ${errors}`);
 
-      // Refresh the page data using Next.js router
-      router.refresh();
+      // Refresh students list from API
+      try {
+        const studentsResponse = await fetch("/api/coach/students");
+        if (!studentsResponse.ok) {
+          throw new Error(`Failed to fetch students: ${studentsResponse.statusText}`);
+        }
+        const apiData: ApiStudent[] = await studentsResponse.json();
+        
+        if (Array.isArray(apiData)) {
+          const mappedStudents: Student[] = apiData.map((item: ApiStudent) => {
+            const hasActivity24h = (item.stats?.rapidGames24h ?? 0) + (item.stats?.blitzGames24h ?? 0) + (item.stats?.puzzles3d ?? 0) > 0;
+            const lastActiveStatus: 'green' | 'grey' = hasActivity24h ? 'green' : 'grey';
+            
+            return {
+              ...item,
+              lastActiveStatus,
+              platform: (item.platform === "lichess" || item.platform === "chesscom" ? item.platform : "lichess") as "lichess" | "chesscom",
+              handle: item.platform_username || item.nickname,
+              rapidGames24h: item.stats?.rapidGames24h ?? null,
+              rapidGames7d: item.stats?.rapidGames7d ?? null,
+              blitzGames24h: item.stats?.blitzGames24h ?? null,
+              blitzGames7d: item.stats?.blitzGames7d ?? null,
+              homeworkCompletionPct: 0,
+              puzzleDelta3d: item.stats?.puzzles3d ?? null,
+              puzzleDelta7d: item.stats?.puzzles7d ?? null,
+            };
+          });
+          setStudents(mappedStudents);
+        }
+      } catch (fetchError) {
+        console.error("Error refreshing students list:", fetchError);
+        // Still show success for stats update even if refresh fails
+      }
+
+      // Clear status message after 5 seconds
+      setTimeout(() => setUpdateStatsStatus(null), 5000);
     } catch (error) {
       console.error("Error updating stats:", error);
-      alert(`Failed to update stats: ${error instanceof Error ? error.message : "Unknown error"}`);
+      setUpdateStatsStatus(`Error: ${error instanceof Error ? error.message : "Unknown error"}`);
+      setTimeout(() => setUpdateStatsStatus(null), 5000);
     } finally {
       setIsUpdatingStats(false);
     }
@@ -1192,19 +1333,26 @@ export default function CoachDashboardPage() {
           </div>
 
           {/* Update Stats Icon Button */}
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-9 w-9 rounded-full p-0"
-            title="Update stats"
-            onClick={handleUpdateStats}
-            disabled={isUpdatingStats}
-            aria-label="Update stats"
-          >
-            <span aria-hidden className="text-base leading-none">
-              {isUpdatingStats ? "⏳" : "↻"}
-            </span>
-          </Button>
+          <div className="flex flex-col items-end gap-1">
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-9 w-9 rounded-full p-0"
+              title="Update stats"
+              onClick={handleUpdateStats}
+              disabled={isUpdatingStats}
+              aria-label="Update stats"
+            >
+              <span aria-hidden className="text-base leading-none">
+                {isUpdatingStats ? "⏳" : "↻"}
+              </span>
+            </Button>
+            {updateStatsStatus && (
+              <span className="text-xs text-[hsl(var(--muted-foreground))] whitespace-nowrap">
+                {updateStatsStatus}
+              </span>
+            )}
+          </div>
         </div>
       </div>
 
@@ -1473,19 +1621,39 @@ export default function CoachDashboardPage() {
                     {student.nickname}
                   </td>
                   <td className="border-r border-[hsl(var(--border))] px-3 py-2 text-sm text-[hsl(var(--muted-foreground))]">
-                    {student.platform === "lichess" ? "Lichess" : "Chess.com"}
+                    <div className="flex items-center gap-2">
+                      <span>{student.platform === "lichess" ? "Lichess" : "Chess.com"}</span>
+                      {/* Stats freshness badge removed - TODO: Re-enable after investigating stale badge issues */}
+                      {/* {(student.platform === "lichess" || student.platform === "chesscom") && 
+                       (student.statsIsStale === true || student.statsComputedAt === null || student.statsComputedAt === undefined) && (
+                        <StatsFreshnessBadge
+                          isStale={true}
+                          computedAt={student.statsComputedAt ?? null}
+                          errorCode={student.statsUpdateErrorCode ?? null}
+                          attemptAt={student.statsUpdateAttemptAt ?? null}
+                        />
+                      )} */}
+                    </div>
                   </td>
                   <td className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-sm text-[hsl(var(--foreground))] tabular-nums">
-                    {student.rapidGames24h}
+                    {student.statsIsStale === true && (student.rapidGames24h === 0 || student.rapidGames24h === null || student.rapidGames24h === undefined) 
+                      ? <span className="text-[hsl(var(--muted-foreground))]">—</span>
+                      : formatCount(student.rapidGames24h)}
                   </td>
                   <td className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-sm text-[hsl(var(--foreground))] tabular-nums">
-                    {student.rapidGames7d}
+                    {student.statsIsStale === true && (student.rapidGames7d === 0 || student.rapidGames7d === null || student.rapidGames7d === undefined) 
+                      ? <span className="text-[hsl(var(--muted-foreground))]">—</span>
+                      : formatCount(student.rapidGames7d)}
                   </td>
                   <td className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-sm text-[hsl(var(--foreground))] tabular-nums">
-                    {student.blitzGames24h}
+                    {student.statsIsStale === true && (student.blitzGames24h === 0 || student.blitzGames24h === null || student.blitzGames24h === undefined) 
+                      ? <span className="text-[hsl(var(--muted-foreground))]">—</span>
+                      : formatCount(student.blitzGames24h)}
                   </td>
                   <td className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-sm text-[hsl(var(--foreground))] tabular-nums">
-                    {student.blitzGames7d}
+                    {student.statsIsStale === true && (student.blitzGames7d === 0 || student.blitzGames7d === null || student.blitzGames7d === undefined) 
+                      ? <span className="text-[hsl(var(--muted-foreground))]">—</span>
+                      : formatCount(student.blitzGames7d)}
                   </td>
                   <td className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-sm text-[hsl(var(--foreground))] tabular-nums">
                     {student.stats?.rapidRating !== null && student.stats?.rapidRating !== undefined && student.stats?.rapidRating !== 0 ? student.stats?.rapidRating : <span className="text-[hsl(var(--muted-foreground))]">—</span>}

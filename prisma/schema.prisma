@@ -477,6 +477,7 @@ model profiles {
   platform_connections    platform_connections[]    @relation("PlatformConnections")
   stats_snapshots         stats_snapshots[]
   student_puzzle_attempts student_puzzle_attempts[]
+  player_stats_v2         player_stats_v2[]         @relation("PlayerStatsV2")
 
   @@schema("public")
 }
@@ -504,20 +505,44 @@ model stats_snapshots {
   // --- RAPID ---
   rapid_rating Int? @default(0)
   rapid_24h    Int? @default(0)
+  rapid_7d     Int? @default(0)
   rapid_total  Int? @default(0)
 
   // --- BLITZ ---
   blitz_rating Int? @default(0)
   blitz_24h    Int? @default(0)
+  blitz_7d     Int? @default(0)
   blitz_total  Int? @default(0)
 
   // --- PUZZLES ---
   puzzle_rating Int? @default(0)
   puzzle_24h    Int? @default(0)
+  puzzle_7d     Int? @default(0)
   puzzle_total  Int? @default(0)
 
   profiles   profiles @relation(fields: [user_id], references: [id], onDelete: Cascade)
   @@index([user_id])
+  @@schema("public")
+}
+
+/// Stats v2: Clean history-based game counts
+model player_stats_v2 {
+  id                     String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  student_id             String    @db.Uuid
+  platform               String    // 'lichess' or 'chesscom'
+  rapid_24h              Int?      @default(0)
+  rapid_7d               Int?      @default(0)
+  blitz_24h              Int?      @default(0)
+  blitz_7d               Int?      @default(0)
+  computed_at            DateTime  @default(now()) @db.Timestamptz(6)
+  last_update_ok         Boolean?
+  last_update_error_code String?   @db.Text
+  last_update_error_message String? @db.Text
+  last_update_attempt_at DateTime? @db.Timestamptz(6)
+  profiles               profiles  @relation("PlayerStatsV2", fields: [student_id], references: [id], onDelete: Cascade)
+
+  @@unique([student_id, platform], name: "student_id_platform")
+  @@index([student_id])
   @@schema("public")
 }
 

@@ -368,8 +368,6 @@ export async function GET(request: NextRequest) {
       }
 
       // 2. Insert Snapshot
-      // Важливо: Якщо у вас в базі немає колонки puzzles_24h, цей рядок може викликати помилку.
-      // Якщо помилка буде, просто видаліть рядок `puzzles_24h: row.puzzlesSolved24h`
       await supabase.from("stats_snapshots").insert({
         user_id: userId,
         source: row.platform,
@@ -377,8 +375,11 @@ export async function GET(request: NextRequest) {
         blitz_rating: row.blitzRating,
         puzzle_rating: row.puzzleRating,
         rapid_24h: row.rapidGames24h,
+        rapid_7d: row.rapidGames7d,  // ✅ ADDED: Persist computed 7d value
         blitz_24h: row.blitzGames24h,
+        blitz_7d: row.blitzGames7d,  // ✅ ADDED: Persist computed 7d value
         puzzle_24h: row.puzzlesSolved24h,
+        puzzle_7d: 0,  // ✅ ADDED: Set to 0 (puzzle_7d not computed in player-lookup, only 24h)
         captured_at: new Date().toISOString(),
       });
     }
