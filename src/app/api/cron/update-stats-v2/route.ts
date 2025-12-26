@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { computeFromLichess, computeFromChessCom } from '@/lib/stats/gamesActivityV2';
+import { computeLichessPuzzleCountsForUser } from '@/lib/stats/computeLichessPuzzleCountsForUser';
 
 export const dynamic = 'force-dynamic';
+export const runtime = 'nodejs';
 
 export async function GET(request: NextRequest) {
   const startTime = Date.now();
@@ -198,6 +200,88 @@ export async function GET(request: NextRequest) {
           blitz_7d: counts.blitz7d,
         };
 
+        // Compute puzzle total for Lichess users (before upserting player_stats_v2)
+        let puzzleTotal: number | null = null;
+        let puzzle24h: number | null = null;
+        let puzzle7d: number | null = null;
+
+        if (platform === 'lichess') {
+          const puzzleRes = await computeLichessPuzzleCountsForUser(studentId);
+
+          if (puzzleRes.status === 'OK') {
+            puzzleTotal = puzzleRes.puzzleTotal;
+
+            // Compute puzzle_24h and puzzle_7d using snapshot-delta method
+            if (puzzleTotal !== null) {
+              const window24hStart = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+              const window7dStart = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+
+              // Find baseline snapshot for 24h window: latest snapshot at/<= window24hStart
+              const baseline24h = await prisma.stats_snapshots.findFirst({
+                where: {
+                  user_id: studentId,
+                  captured_at: { lte: window24hStart },
+                },
+                orderBy: { captured_at: 'desc' },
+                select: { puzzle_total: true, captured_at: true },
+              });
+
+              // Compute 24h delta only if baseline exists, has valid puzzle_total, and is fresh enough
+              // Baseline is VALID only if captured_at >= (windowStart24 - 12 hours)
+              const baseline24hFreshnessThreshold = new Date(window24hStart.getTime() - 12 * 60 * 60 * 1000);
+              const isBaseline24hValid =
+                baseline24h &&
+                baseline24h.puzzle_total !== null &&
+                baseline24h.puzzle_total !== undefined &&
+                baseline24h.captured_at >= baseline24hFreshnessThreshold;
+
+              if (isBaseline24hValid) {
+                const delta24h = puzzleTotal - baseline24h.puzzle_total;
+                puzzle24h = delta24h >= 0 ? delta24h : null; // null if counter reset/anomaly
+              } else {
+                // No baseline snapshot, baseline.puzzle_total is null, or baseline is too old
+                puzzle24h = null;
+              }
+
+              // Find baseline snapshot for 7d window: latest snapshot at/<= window7dStart
+              const baseline7d = await prisma.stats_snapshots.findFirst({
+                where: {
+                  user_id: studentId,
+                  captured_at: { lte: window7dStart },
+                },
+                orderBy: { captured_at: 'desc' },
+                select: { puzzle_total: true, captured_at: true },
+              });
+
+              // Compute 7d delta only if baseline exists, has valid puzzle_total, and is fresh enough
+              // Baseline is VALID only if captured_at >= (windowStart7d - 24 hours)
+              const baseline7dFreshnessThreshold = new Date(window7dStart.getTime() - 24 * 60 * 60 * 1000);
+              const isBaseline7dValid =
+                baseline7d &&
+                baseline7d.puzzle_total !== null &&
+                baseline7d.puzzle_total !== undefined &&
+                baseline7d.captured_at >= baseline7dFreshnessThreshold;
+
+              if (isBaseline7dValid) {
+                const delta7d = puzzleTotal - baseline7d.puzzle_total;
+                puzzle7d = delta7d >= 0 ? delta7d : null; // null if counter reset/anomaly
+              } else {
+                // No baseline snapshot, baseline.puzzle_total is null, or baseline is too old
+                puzzle7d = null;
+              }
+            } else {
+              // puzzleTotal is null, so puzzle_24h and puzzle_7d must be null
+              puzzle24h = null;
+              puzzle7d = null;
+            }
+          } else {
+            // On error, puzzleTotal, puzzle24h, puzzle7d remain null
+            puzzleTotal = null;
+            puzzle24h = null;
+            puzzle7d = null;
+          }
+        }
+
         // Upsert into player_stats_v2 using the unique constraint (student_id + platform)
         // ALWAYS upsert with computed_at set to now(), even when counts are 0
         await prisma.player_stats_v2.upsert({
@@ -212,6 +296,9 @@ export async function GET(request: NextRequest) {
             rapid_7d: stats.rapid_7d,
             blitz_24h: stats.blitz_24h,
             blitz_7d: stats.blitz_7d,
+            puzzle_total: puzzleTotal,
+            puzzle_24h: puzzle24h,
+            puzzle_7d: puzzle7d,
             computed_at: now,
             last_update_ok: true,
             last_update_error_code: null,
@@ -225,6 +312,9 @@ export async function GET(request: NextRequest) {
             rapid_7d: stats.rapid_7d,
             blitz_24h: stats.blitz_24h,
             blitz_7d: stats.blitz_7d,
+            puzzle_total: puzzleTotal,
+            puzzle_24h: puzzle24h,
+            puzzle_7d: puzzle7d,
             computed_at: now,
             last_update_ok: true,
             last_update_error_code: null,
@@ -270,15 +360,15 @@ export async function GET(request: NextRequest) {
               rapid_7d: stats.rapid_7d,
               blitz_24h: stats.blitz_24h,
               blitz_7d: stats.blitz_7d,
-              // Leave ratings/puzzle fields as default/null/0
+              puzzle_24h: puzzle24h,
+              puzzle_7d: puzzle7d,
+              puzzle_total: puzzleTotal,
+              // Leave ratings/other total fields as default/null/0
               rapid_rating: null,
               blitz_rating: null,
               puzzle_rating: null,
               rapid_total: null,
               blitz_total: null,
-              puzzle_24h: null,
-              puzzle_7d: null,
-              puzzle_total: null,
             },
           });
         } catch (snapshotError) {
