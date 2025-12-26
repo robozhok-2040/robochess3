@@ -451,13 +451,14 @@ model chess_puzzles {
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 /// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
 model platform_connections {
-  id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  user_id           String    @db.Uuid
-  platform          String
-  platform_username String
-  platform_user_id  String?
-  last_synced_at    DateTime? @db.Timestamptz(6)
-  profiles          profiles  @relation("PlatformConnections", fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  id                           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id                      String    @db.Uuid
+  platform                     String
+  platform_username            String
+  platform_user_id             String?
+  last_synced_at               DateTime? @db.Timestamptz(6)
+  lichess_oauth_token_encrypted String?
+  profiles                     profiles  @relation("PlatformConnections", fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@unique([user_id, platform])
   @@schema("public")
