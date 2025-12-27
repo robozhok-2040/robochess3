@@ -538,6 +538,10 @@ model player_stats_v2 {
   puzzle_total           Int?
   puzzle_24h             Int?
   puzzle_7d              Int?
+  rapid_rating_delta_24h Int?
+  rapid_rating_delta_7d  Int?
+  blitz_rating_delta_24h Int?
+  blitz_rating_delta_7d  Int?
   computed_at            DateTime  @default(now()) @db.Timestamptz(6)
   last_update_ok         Boolean?
   last_update_error_code String?   @db.Text

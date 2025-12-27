@@ -29,10 +29,12 @@ export async function GET(request: NextRequest) {
     
     // Map: studentId -> platform -> stat
     const v2StatsMap = new Map<string, Map<string, any>>();
+    // Map: studentId -> platform -> latest snapshot (for ratings)
+    const v2SnapshotMap = new Map<string, Map<string, any>>();
     
     if (studentsWithV2Platforms.length > 0) {
-      // Fetch most recent v2 stats for each student-platform combination
-      const v2StatsPromises: Array<Promise<{ studentId: string; platform: string; stat: any } | null>> = [];
+      // Fetch most recent v2 stats and snapshots for each student-platform combination
+      const v2StatsPromises: Array<Promise<{ studentId: string; platform: string; stat: any; snapshot: any } | null>> = [];
       
       for (const student of studentsWithV2Platforms) {
         for (const conn of student.platform_connections) {
@@ -46,7 +48,22 @@ export async function GET(request: NextRequest) {
                   },
                   orderBy: { computed_at: 'desc' },
                 });
-                return stat ? { studentId: student.id, platform: conn.platform, stat } : null;
+                
+                // Fetch latest snapshot for this platform (source = platform name)
+                const snapshot = await prisma.stats_snapshots.findFirst({
+                  where: {
+                    user_id: student.id,
+                    source: conn.platform, // source = 'lichess' or 'chesscom'
+                  },
+                  orderBy: { captured_at: 'desc' },
+                  select: {
+                    rapid_rating: true,
+                    blitz_rating: true,
+                    puzzle_rating: true,
+                  },
+                });
+                
+                return stat ? { studentId: student.id, platform: conn.platform, stat, snapshot } : null;
               })()
             );
           }
@@ -58,8 +75,12 @@ export async function GET(request: NextRequest) {
         if (result) {
           if (!v2StatsMap.has(result.studentId)) {
             v2StatsMap.set(result.studentId, new Map());
+            v2SnapshotMap.set(result.studentId, new Map());
           }
           v2StatsMap.get(result.studentId)!.set(result.platform, result.stat);
+          if (result.snapshot) {
+            v2SnapshotMap.get(result.studentId)!.set(result.platform, result.snapshot);
+          }
         }
       }
     }
@@ -71,8 +92,13 @@ export async function GET(request: NextRequest) {
       const latestStats = student.stats_snapshots[0];
       const platform = connection?.platform;
       const platformStatsMap = v2StatsMap.get(student.id);
+      const platformSnapshotMap = v2SnapshotMap.get(student.id);
       const v2Stats = platform && (platform === 'lichess' || platform === 'chesscom') 
         ? platformStatsMap?.get(platform) 
+        : null;
+      // Get platform-specific snapshot for ratings (v2 platforms)
+      const v2Snapshot = platform && (platform === 'lichess' || platform === 'chesscom')
+        ? platformSnapshotMap?.get(platform)
         : null;
 
       // Determine stats source (v2 is default for Lichess and Chess.com)
@@ -83,6 +109,15 @@ export async function GET(request: NextRequest) {
       let rapidGames7d: number | null;
       let blitzGames24h: number | null;
       let blitzGames7d: number | null;
+      let puzzleTotal: number | null;
+      let puzzle24h: number | null;
+      let puzzle7d: number | null;
+      let rapidRating: number | null;
+      let blitzRating: number | null;
+      let rapidRatingDelta24h: number | null;
+      let rapidRatingDelta7d: number | null;
+      let blitzRatingDelta24h: number | null;
+      let blitzRatingDelta7d: number | null;
 
       // Stats freshness metadata (for lichess/chesscom only)
       let statsComputedAt: string | null = null;
@@ -101,6 +136,21 @@ export async function GET(request: NextRequest) {
           blitzGames24h = v2Stats.blitz_24h ?? null;
           blitzGames7d = v2Stats.blitz_7d ?? null;
           
+          // Puzzle fields from player_stats_v2 (only for lichess/chesscom)
+          puzzleTotal = v2Stats.puzzle_total ?? null;
+          puzzle24h = v2Stats.puzzle_24h ?? null;
+          puzzle7d = v2Stats.puzzle_7d ?? null;
+          
+          // Rating delta fields from player_stats_v2
+          rapidRatingDelta24h = v2Stats.rapid_rating_delta_24h ?? null;
+          rapidRatingDelta7d = v2Stats.rapid_rating_delta_7d ?? null;
+          blitzRatingDelta24h = v2Stats.blitz_rating_delta_24h ?? null;
+          blitzRatingDelta7d = v2Stats.blitz_rating_delta_7d ?? null;
+          
+          // Ratings from platform-specific snapshot (v2)
+          rapidRating = v2Snapshot?.rapid_rating ?? null;
+          blitzRating = v2Snapshot?.blitz_rating ?? null;
+          
           // Extract computed_at timestamp
           statsComputedAt = v2Stats.computed_at ? new Date(v2Stats.computed_at).toISOString() : null;
           
@@ -114,6 +164,15 @@ export async function GET(request: NextRequest) {
           rapidGames7d = null;
           blitzGames24h = null;
           blitzGames7d = null;
+          puzzleTotal = null;
+          puzzle24h = null;
+          puzzle7d = null;
+          rapidRating = null;
+          blitzRating = null;
+          rapidRatingDelta24h = null;
+          rapidRatingDelta7d = null;
+          blitzRatingDelta24h = null;
+          blitzRatingDelta7d = null;
         }
         
         // Extract last_synced_at from platform connection
@@ -143,6 +202,11 @@ export async function GET(request: NextRequest) {
         rapidGames7d = latestStats?.rapid_7d ?? 0;
         blitzGames24h = latestStats?.blitz_24h ?? 0;
         blitzGames7d = latestStats?.blitz_7d ?? 0;
+        puzzleTotal = latestStats?.puzzle_total ?? 0;
+        puzzle24h = latestStats?.puzzle_24h ?? 0;
+        puzzle7d = latestStats?.puzzle_7d ?? 0;
+        rapidRating = latestStats?.rapid_rating ?? null;
+        blitzRating = latestStats?.blitz_rating ?? null;
       }
 
       const result: any = {
@@ -154,10 +218,10 @@ export async function GET(request: NextRequest) {
         last_active: latestStats?.captured_at || connection?.last_synced_at || null,
         
         stats: {
-            // RATINGS (always from legacy snapshots for now)
-            rapidRating: latestStats?.rapid_rating ?? null,
-            blitzRating: latestStats?.blitz_rating ?? null,
-            puzzleRating: latestStats?.puzzle_rating ?? null,
+            // RATINGS (from platform-specific snapshot for v2, legacy snapshot for others)
+            rapidRating: rapidRating,
+            blitzRating: blitzRating,
+            puzzleRating: isV2Platform ? (v2Snapshot?.puzzle_rating ?? null) : (latestStats?.puzzle_rating ?? null),
             
             // 24H/7D STATS (v2 for Lichess and Chess.com returns null when missing, legacy for other platforms defaults to 0)
             rapidGames24h: rapidGames24h,
@@ -165,10 +229,16 @@ export async function GET(request: NextRequest) {
             blitzGames24h: blitzGames24h,
             blitzGames7d: blitzGames7d,
             
-            // PUZZLES (always from legacy snapshots for now)
-            puzzles3d: latestStats?.puzzle_24h ?? 0,
-            puzzles7d: latestStats?.puzzle_7d ?? 0,
-            puzzle_total: latestStats?.puzzle_total ?? 0,
+            // PUZZLES (v2 for Lichess and Chess.com, legacy for other platforms)
+            puzzles3d: isV2Platform ? puzzle24h : (latestStats?.puzzle_24h ?? 0),
+            puzzles7d: isV2Platform ? puzzle7d : (latestStats?.puzzle_7d ?? 0),
+            puzzle_total: isV2Platform ? puzzleTotal : (latestStats?.puzzle_total ?? 0),
+            
+            // RATING DELTAS (v2 for Lichess and Chess.com only, null when missing)
+            rapidRatingDelta24h: isV2Platform ? rapidRatingDelta24h : null,
+            rapidRatingDelta7d: isV2Platform ? rapidRatingDelta7d : null,
+            blitzRatingDelta24h: isV2Platform ? blitzRatingDelta24h : null,
+            blitzRatingDelta7d: isV2Platform ? blitzRatingDelta7d : null,
         }
       };
 

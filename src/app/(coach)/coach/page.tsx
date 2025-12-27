@@ -23,6 +23,10 @@ interface ApiStudent {
     puzzles3d: number; // Maps from DB column puzzles_24h
     puzzles7d: number;
     puzzle_total: number;
+    rapidRatingDelta24h?: number | null;
+    rapidRatingDelta7d?: number | null;
+    blitzRatingDelta24h?: number | null;
+    blitzRatingDelta7d?: number | null;
   };
   platform?: string;
   platform_username?: string;
@@ -159,6 +163,20 @@ export default function CoachDashboardPage() {
   const [platformFilter, setPlatformFilter] = useState<"all" | "lichess" | "chesscom">("all");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // Helper function to format rating delta for display with color
+  function formatRatingDelta(delta: number | null | undefined): { text: string; className: string } {
+    if (delta === null || delta === undefined) {
+      return { text: "—", className: "text-[hsl(var(--muted-foreground))]" };
+    }
+    if (delta > 0) {
+      return { text: `+${delta}`, className: "text-green-600 dark:text-green-400" };
+    }
+    if (delta < 0) {
+      return { text: `${delta}`, className: "text-red-600 dark:text-red-400" };
+    }
+    return { text: "0", className: "text-[hsl(var(--muted-foreground))]" };
+  }
 
   // Helper function to format relative time and determine traffic light color
   function formatLastActive(seenAt: number | null): { label: string; color: string } {
@@ -1656,10 +1674,40 @@ export default function CoachDashboardPage() {
                       : formatCount(student.blitzGames7d)}
                   </td>
                   <td className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-sm text-[hsl(var(--foreground))] tabular-nums">
-                    {student.stats?.rapidRating !== null && student.stats?.rapidRating !== undefined && student.stats?.rapidRating !== 0 ? student.stats?.rapidRating : <span className="text-[hsl(var(--muted-foreground))]">—</span>}
+                    {student.stats?.rapidRating !== null && student.stats?.rapidRating !== undefined && student.stats?.rapidRating !== 0 ? (
+                      <div className="flex flex-col items-end">
+                        <span className="font-medium">{student.stats.rapidRating}</span>
+                        <span className="text-xs whitespace-nowrap">
+                          <span className={formatRatingDelta(student.stats?.rapidRatingDelta24h).className}>
+                            {formatRatingDelta(student.stats?.rapidRatingDelta24h).text}
+                          </span>
+                          <span className="text-[hsl(var(--muted-foreground))]"> / </span>
+                          <span className={formatRatingDelta(student.stats?.rapidRatingDelta7d).className}>
+                            {formatRatingDelta(student.stats?.rapidRatingDelta7d).text}
+                          </span>
+                        </span>
+                      </div>
+                    ) : (
+                      <span className="text-[hsl(var(--muted-foreground))]">—</span>
+                    )}
                   </td>
                   <td className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-sm text-[hsl(var(--foreground))] tabular-nums">
-                    {student.stats?.blitzRating !== null && student.stats?.blitzRating !== undefined && student.stats?.blitzRating !== 0 ? student.stats?.blitzRating : <span className="text-[hsl(var(--muted-foreground))]">—</span>}
+                    {student.stats?.blitzRating !== null && student.stats?.blitzRating !== undefined && student.stats?.blitzRating !== 0 ? (
+                      <div className="flex flex-col items-end">
+                        <span className="font-medium">{student.stats.blitzRating}</span>
+                        <span className="text-xs whitespace-nowrap">
+                          <span className={formatRatingDelta(student.stats?.blitzRatingDelta24h).className}>
+                            {formatRatingDelta(student.stats?.blitzRatingDelta24h).text}
+                          </span>
+                          <span className="text-[hsl(var(--muted-foreground))]"> / </span>
+                          <span className={formatRatingDelta(student.stats?.blitzRatingDelta7d).className}>
+                            {formatRatingDelta(student.stats?.blitzRatingDelta7d).text}
+                          </span>
+                        </span>
+                      </div>
+                    ) : (
+                      <span className="text-[hsl(var(--muted-foreground))]">—</span>
+                    )}
                   </td>
                   <td className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-sm tabular-nums">
                     {student.platform === "chesscom" ? (

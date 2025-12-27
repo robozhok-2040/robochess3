@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { computeFromLichess, computeFromChessCom } from '@/lib/stats/gamesActivityV2';
 import { computeLichessPuzzleCountsForUser } from '@/lib/stats/computeLichessPuzzleCountsForUser';
+import { computeChesscomRatingsForUser } from '@/lib/stats/computeChesscomRatingsForUser';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -200,6 +201,111 @@ export async function GET(request: NextRequest) {
           blitz_7d: counts.blitz7d,
         };
 
+        // Fetch current ratings for Lichess users
+        let rapidRating: number | null = null;
+        let blitzRating: number | null = null;
+
+        if (platform === 'lichess') {
+          try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout
+
+            const userResponse = await fetch(`https://lichess.org/api/user/${username}`, {
+              signal: controller.signal,
+              headers: {
+                'Accept': 'application/json',
+              },
+            });
+
+            clearTimeout(timeoutId);
+
+            if (userResponse.ok) {
+              const userData = await userResponse.json();
+              rapidRating = userData?.perfs?.rapid?.rating ?? null;
+              blitzRating = userData?.perfs?.blitz?.rating ?? null;
+            }
+          } catch (ratingError) {
+            // Non-fatal: log but continue without ratings
+            console.warn(`[update-stats-v2] Failed to fetch ratings for ${platform}/${username}:`, ratingError);
+          }
+        } else if (platform === 'chesscom') {
+          // Fetch Chess.com ratings
+          const chesscomRatings = await computeChesscomRatingsForUser(username);
+          rapidRating = chesscomRatings.rapidRating;
+          blitzRating = chesscomRatings.blitzRating;
+        }
+
+        // Compute rating deltas using snapshot baseline method (before creating new snapshot)
+        let rapidRatingDelta24h: number | null = null;
+        let rapidRatingDelta7d: number | null = null;
+        let blitzRatingDelta24h: number | null = null;
+        let blitzRatingDelta7d: number | null = null;
+
+        if (rapidRating !== null || blitzRating !== null) {
+          const window24hStart = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+          const window7dStart = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+
+          // Find baseline snapshot for 24h window
+          const baseline24h = await prisma.stats_snapshots.findFirst({
+            where: {
+              user_id: studentId,
+              captured_at: { lte: window24hStart },
+            },
+            orderBy: { captured_at: 'desc' },
+            select: { rapid_rating: true, blitz_rating: true, captured_at: true },
+          });
+
+          // Baseline is VALID only if captured_at >= (windowStart24 - 12 hours)
+          const baseline24hFreshnessThreshold = new Date(window24hStart.getTime() - 12 * 60 * 60 * 1000);
+          const isBaseline24hValid =
+            baseline24h &&
+            baseline24h.captured_at >= baseline24hFreshnessThreshold;
+
+          if (isBaseline24hValid) {
+            // Compute rapid rating delta 24h
+            if (rapidRating !== null && baseline24h.rapid_rating !== null && baseline24h.rapid_rating !== undefined) {
+              const delta = rapidRating - baseline24h.rapid_rating;
+              rapidRatingDelta24h = !isNaN(delta) ? delta : null;
+            }
+
+            // Compute blitz rating delta 24h
+            if (blitzRating !== null && baseline24h.blitz_rating !== null && baseline24h.blitz_rating !== undefined) {
+              const delta = blitzRating - baseline24h.blitz_rating;
+              blitzRatingDelta24h = !isNaN(delta) ? delta : null;
+            }
+          }
+
+          // Find baseline snapshot for 7d window
+          const baseline7d = await prisma.stats_snapshots.findFirst({
+            where: {
+              user_id: studentId,
+              captured_at: { lte: window7dStart },
+            },
+            orderBy: { captured_at: 'desc' },
+            select: { rapid_rating: true, blitz_rating: true, captured_at: true },
+          });
+
+          // Baseline is VALID only if captured_at >= (windowStart7d - 24 hours)
+          const baseline7dFreshnessThreshold = new Date(window7dStart.getTime() - 24 * 60 * 60 * 1000);
+          const isBaseline7dValid =
+            baseline7d &&
+            baseline7d.captured_at >= baseline7dFreshnessThreshold;
+
+          if (isBaseline7dValid) {
+            // Compute rapid rating delta 7d
+            if (rapidRating !== null && baseline7d.rapid_rating !== null && baseline7d.rapid_rating !== undefined) {
+              const delta = rapidRating - baseline7d.rapid_rating;
+              rapidRatingDelta7d = !isNaN(delta) ? delta : null;
+            }
+
+            // Compute blitz rating delta 7d
+            if (blitzRating !== null && baseline7d.blitz_rating !== null && baseline7d.blitz_rating !== undefined) {
+              const delta = blitzRating - baseline7d.blitz_rating;
+              blitzRatingDelta7d = !isNaN(delta) ? delta : null;
+            }
+          }
+        }
+
         // Compute puzzle total for Lichess users (before upserting player_stats_v2)
         let puzzleTotal: number | null = null;
         let puzzle24h: number | null = null;
@@ -299,6 +405,10 @@ export async function GET(request: NextRequest) {
             puzzle_total: puzzleTotal,
             puzzle_24h: puzzle24h,
             puzzle_7d: puzzle7d,
+            rapid_rating_delta_24h: rapidRatingDelta24h,
+            rapid_rating_delta_7d: rapidRatingDelta7d,
+            blitz_rating_delta_24h: blitzRatingDelta24h,
+            blitz_rating_delta_7d: blitzRatingDelta7d,
             computed_at: now,
             last_update_ok: true,
             last_update_error_code: null,
@@ -315,6 +425,10 @@ export async function GET(request: NextRequest) {
             puzzle_total: puzzleTotal,
             puzzle_24h: puzzle24h,
             puzzle_7d: puzzle7d,
+            rapid_rating_delta_24h: rapidRatingDelta24h,
+            rapid_rating_delta_7d: rapidRatingDelta7d,
+            blitz_rating_delta_24h: blitzRatingDelta24h,
+            blitz_rating_delta_7d: blitzRatingDelta7d,
             computed_at: now,
             last_update_ok: true,
             last_update_error_code: null,
@@ -348,24 +462,52 @@ export async function GET(request: NextRequest) {
           `[update-stats-v2] ✓ Success: ${platform}/${username} - rapid: ${stats.rapid_24h}/${stats.rapid_7d}, blitz: ${stats.blitz_24h}/${stats.blitz_7d}`
         );
 
+        // Fallback: if ratings are null, try to preserve last known values from previous snapshot
+        let finalRapidRating = rapidRating;
+        let finalBlitzRating = blitzRating;
+        
+        if (rapidRating === null || blitzRating === null) {
+          const lastSnapshot = await prisma.stats_snapshots.findFirst({
+            where: {
+              user_id: studentId,
+              source: platform, // platform-specific snapshot
+            },
+            orderBy: { captured_at: 'desc' },
+            select: {
+              rapid_rating: true,
+              blitz_rating: true,
+            },
+          });
+          
+          if (lastSnapshot) {
+            if (finalRapidRating === null && lastSnapshot.rapid_rating !== null) {
+              finalRapidRating = lastSnapshot.rapid_rating;
+            }
+            if (finalBlitzRating === null && lastSnapshot.blitz_rating !== null) {
+              finalBlitzRating = lastSnapshot.blitz_rating;
+            }
+          }
+        }
+
         // Insert snapshot history (NON-FATAL: wrapped in try/catch)
         // If snapshot insertion fails, log warning but don't fail the student sync
+        // This snapshot is needed for rating deltas and to track current rating values
         try {
           await prisma.stats_snapshots.create({
             data: {
               user_id: studentId,
               captured_at: now,
-              source: `cron:v2:${platform}`,
+              source: platform, // platform is 'lichess' or 'chesscom' (matches DB constraint)
+              rapid_rating: finalRapidRating,
+              blitz_rating: finalBlitzRating,
               rapid_24h: stats.rapid_24h,
               rapid_7d: stats.rapid_7d,
               blitz_24h: stats.blitz_24h,
               blitz_7d: stats.blitz_7d,
+              puzzle_total: puzzleTotal,
               puzzle_24h: puzzle24h,
               puzzle_7d: puzzle7d,
-              puzzle_total: puzzleTotal,
-              // Leave ratings/other total fields as default/null/0
-              rapid_rating: null,
-              blitz_rating: null,
+              // Leave other rating/puzzle fields as default/null/0
               puzzle_rating: null,
               rapid_total: null,
               blitz_total: null,
