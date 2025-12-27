@@ -1544,7 +1544,7 @@ export default function CoachDashboardPage() {
                 onClick={() => handleSort("puzzleDelta3d")}
               >
                 <span className="inline-flex items-center justify-end">
-                  Puzzles (3d)
+                  Puzzles 24H
                   {sortKey === "puzzleDelta3d" && (
                     <span className="ml-1.5 text-xs text-[hsl(var(--muted-foreground))]">
                       {sortDir === "asc" ? "▲" : "▼"}
@@ -1662,16 +1662,20 @@ export default function CoachDashboardPage() {
                     {student.stats?.blitzRating !== null && student.stats?.blitzRating !== undefined && student.stats?.blitzRating !== 0 ? student.stats?.blitzRating : <span className="text-[hsl(var(--muted-foreground))]">—</span>}
                   </td>
                   <td className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-sm tabular-nums">
-                    {student.stats?.puzzles3d !== null && student.stats?.puzzles3d !== undefined ? (
+                    {student.platform === "chesscom" ? (
+                      <span className="text-[hsl(var(--muted-foreground))]">—</span>
+                    ) : student.stats?.puzzles3d !== null && student.stats?.puzzles3d !== undefined ? (
                       <span className={(student.stats?.puzzles3d ?? 0) > 0 ? "text-green-600 dark:text-green-400 font-semibold" : "text-[hsl(var(--foreground))]"}>
                         {student.stats?.puzzles3d}
                       </span>
                     ) : (
-                      <span className="text-[hsl(var(--foreground))]">0</span>
+                      <span className="text-[hsl(var(--muted-foreground))]">—</span>
                     )}
                   </td>
                   <td className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-sm tabular-nums">
-                    {student.puzzleDelta7d !== null ? (
+                    {student.platform === "chesscom" ? (
+                      <span className="text-[hsl(var(--muted-foreground))]">—</span>
+                    ) : student.puzzleDelta7d !== null ? (
                       <span className={student.puzzleDelta7d > 0 ? "text-green-600 dark:text-green-400 font-semibold" : "text-[hsl(var(--muted-foreground))]"}>
                         {student.puzzleDelta7d > 0 ? "+" : ""}{student.puzzleDelta7d}
                       </span>
