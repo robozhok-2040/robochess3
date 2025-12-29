@@ -131,6 +131,7 @@ export async function GET(request: NextRequest) {
         // For Lichess and Chess.com: use v2 if available, otherwise return null (not 0)
         if (v2Stats) {
           statsSource = "v2";
+          // Preserve 0 as 0 (not null) - ?? null already does this correctly, but be explicit
           rapidGames24h = v2Stats.rapid_24h ?? null;
           rapidGames7d = v2Stats.rapid_7d ?? null;
           blitzGames24h = v2Stats.blitz_24h ?? null;

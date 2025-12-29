@@ -8,6 +8,7 @@ export type LichessPuzzleSyncStatus =
 export type LichessPuzzleSyncResult = {
   status: LichessPuzzleSyncStatus;
   puzzleTotal: number | null;
+  puzzleRating: number | null;
   error?: string;
 };
 
@@ -21,11 +22,12 @@ export async function computeLichessPuzzleCountsForUser(
 ): Promise<LichessPuzzleSyncResult> {
   // Validate userId
   if (typeof userId !== 'string' || userId.trim().length === 0) {
-    return {
-      status: 'ERROR',
-      puzzleTotal: null,
-      error: 'USER_ID_MISSING',
-    };
+      return {
+        status: 'ERROR',
+        puzzleTotal: null,
+        puzzleRating: null,
+        error: 'USER_ID_MISSING',
+      };
   }
 
   // Query platform connection to get username
@@ -43,19 +45,21 @@ export async function computeLichessPuzzleCountsForUser(
 
   // Check if connection exists
   if (!connection) {
-    return {
-      status: 'NO_CONNECTION',
-      puzzleTotal: null,
-    };
+      return {
+        status: 'NO_CONNECTION',
+        puzzleTotal: null,
+        puzzleRating: null,
+      };
   }
 
   // Check if username exists
   if (!connection.platform_username || connection.platform_username.trim().length === 0) {
-    return {
-      status: 'ERROR',
-      puzzleTotal: null,
-      error: 'USERNAME_MISSING',
-    };
+      return {
+        status: 'ERROR',
+        puzzleTotal: null,
+        puzzleRating: null,
+        error: 'USERNAME_MISSING',
+      };
   }
 
   const username = connection.platform_username.trim().toLowerCase();
@@ -79,6 +83,7 @@ export async function computeLichessPuzzleCountsForUser(
         return {
           status: 'ERROR',
           puzzleTotal: null,
+          puzzleRating: null,
           error: `User not found: ${username}`,
         };
       }
@@ -96,9 +101,13 @@ export async function computeLichessPuzzleCountsForUser(
       }
     }
 
+    // Extract puzzle rating from perfs.puzzle.rating
+    const puzzleRating = userData?.perfs?.puzzle?.rating ?? null;
+
     return {
       status: 'OK',
       puzzleTotal,
+      puzzleRating,
     };
   } catch (fetchError) {
     const errorMessage =
@@ -109,6 +118,7 @@ export async function computeLichessPuzzleCountsForUser(
       return {
         status: 'ERROR',
         puzzleTotal: null,
+        puzzleRating: null,
         error: 'Request timeout',
       };
     }
@@ -117,6 +127,7 @@ export async function computeLichessPuzzleCountsForUser(
     return {
       status: 'ERROR',
       puzzleTotal: null,
+      puzzleRating: null,
       error: errorMessage,
     };
   }

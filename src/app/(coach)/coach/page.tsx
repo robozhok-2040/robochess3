@@ -20,9 +20,9 @@ interface ApiStudent {
     rapidGames7d: number | null;
     blitzGames24h: number | null;
     blitzGames7d: number | null;
-    puzzles3d: number; // Maps from DB column puzzles_24h
-    puzzles7d: number;
-    puzzle_total: number;
+    puzzles3d: number | null;
+    puzzles7d: number | null;
+    puzzle_total: number | null;
     rapidRatingDelta24h?: number | null;
     rapidRatingDelta7d?: number | null;
     blitzRatingDelta24h?: number | null;
@@ -707,17 +707,19 @@ export default function CoachDashboardPage() {
         const updated = prevStudents.map((student) => {
           const result = results.find((r) => r.studentId === student.id);
           if (result && result.puzzles24h !== null) {
-            console.log(`[PUZZLES] Updating student ${student.id} with ${result.puzzles24h} puzzles`);
-            
-            // Update puzzles3d with new value
-            return {
-              ...student,
-              stats: {
-                ...student.stats,
-                puzzles3d: result.puzzles24h,
-              },
-              puzzleDelta3d: result.puzzles24h, // Also update puzzleDelta3d for sorting
-            };
+            // Only update if API doesn't already have puzzles3d (legacy behavior)
+            const apiHasPuzzles = student.stats?.puzzles3d !== null && student.stats?.puzzles3d !== undefined;
+            if (!apiHasPuzzles) {
+              console.log(`[PUZZLES] Updating student ${student.id} with ${result.puzzles24h} puzzles (API had no value)`);
+              return {
+                ...student,
+                stats: {
+                  ...student.stats,
+                  puzzles3d: result.puzzles24h,
+                },
+                puzzleDelta3d: result.puzzles24h, // Also update puzzleDelta3d for sorting
+              };
+            }
           }
           return student;
         });
@@ -892,9 +894,17 @@ export default function CoachDashboardPage() {
             blitzGames24h: item.stats?.blitzGames24h ?? null,
             blitzGames7d: item.stats?.blitzGames7d ?? null,
             homeworkCompletionPct: 0, // API doesn't provide this yet
-            // Map puzzles3d to puzzleDelta3d for display in Puzzles (3d) column
+            // Map puzzle fields from API (preserve nulls, do not coerce to 0)
             puzzleDelta3d: item.stats?.puzzles3d ?? null,
             puzzleDelta7d: item.stats?.puzzles7d ?? null,
+            // Ensure stats object has all puzzle fields explicitly mapped
+            stats: {
+              ...item.stats,
+              puzzles3d: item.stats?.puzzles3d ?? null,
+              puzzles7d: item.stats?.puzzles7d ?? null,
+              puzzle_total: item.stats?.puzzle_total ?? null,
+              puzzleRating: item.stats?.puzzleRating ?? null,
+            },
           };
         });
 
@@ -1080,8 +1090,17 @@ export default function CoachDashboardPage() {
               blitzGames24h: item.stats?.blitzGames24h ?? null,
               blitzGames7d: item.stats?.blitzGames7d ?? null,
               homeworkCompletionPct: 0,
+              // Map puzzle fields from API (preserve nulls, do not coerce to 0)
               puzzleDelta3d: item.stats?.puzzles3d ?? null,
               puzzleDelta7d: item.stats?.puzzles7d ?? null,
+              // Ensure stats object has all puzzle fields explicitly mapped
+              stats: {
+                ...item.stats,
+                puzzles3d: item.stats?.puzzles3d ?? null,
+                puzzles7d: item.stats?.puzzles7d ?? null,
+                puzzle_total: item.stats?.puzzle_total ?? null,
+                puzzleRating: item.stats?.puzzleRating ?? null,
+              },
             };
           });
           setStudents(mappedStudents);
@@ -1654,36 +1673,28 @@ export default function CoachDashboardPage() {
                     </div>
                   </td>
                   <td className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-sm text-[hsl(var(--foreground))] tabular-nums">
-                    {student.statsIsStale === true && (student.rapidGames24h === 0 || student.rapidGames24h === null || student.rapidGames24h === undefined) 
-                      ? <span className="text-[hsl(var(--muted-foreground))]">—</span>
-                      : formatCount(student.rapidGames24h)}
+                    {formatCount(student.rapidGames24h)}
                   </td>
                   <td className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-sm text-[hsl(var(--foreground))] tabular-nums">
-                    {student.statsIsStale === true && (student.rapidGames7d === 0 || student.rapidGames7d === null || student.rapidGames7d === undefined) 
-                      ? <span className="text-[hsl(var(--muted-foreground))]">—</span>
-                      : formatCount(student.rapidGames7d)}
+                    {formatCount(student.rapidGames7d)}
                   </td>
                   <td className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-sm text-[hsl(var(--foreground))] tabular-nums">
-                    {student.statsIsStale === true && (student.blitzGames24h === 0 || student.blitzGames24h === null || student.blitzGames24h === undefined) 
-                      ? <span className="text-[hsl(var(--muted-foreground))]">—</span>
-                      : formatCount(student.blitzGames24h)}
+                    {formatCount(student.blitzGames24h)}
                   </td>
                   <td className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-sm text-[hsl(var(--foreground))] tabular-nums">
-                    {student.statsIsStale === true && (student.blitzGames7d === 0 || student.blitzGames7d === null || student.blitzGames7d === undefined) 
-                      ? <span className="text-[hsl(var(--muted-foreground))]">—</span>
-                      : formatCount(student.blitzGames7d)}
+                    {formatCount(student.blitzGames7d)}
                   </td>
                   <td className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-sm text-[hsl(var(--foreground))] tabular-nums">
                     {student.stats?.rapidRating !== null && student.stats?.rapidRating !== undefined && student.stats?.rapidRating !== 0 ? (
                       <div className="flex flex-col items-end">
                         <span className="font-medium">{student.stats.rapidRating}</span>
-                        <span className="text-xs whitespace-nowrap">
+                        <span className="text-xs whitespace-nowrap flex items-center gap-1">
                           <span className={formatRatingDelta(student.stats?.rapidRatingDelta24h).className}>
-                            {formatRatingDelta(student.stats?.rapidRatingDelta24h).text}
+                            Δ24h {formatRatingDelta(student.stats?.rapidRatingDelta24h).text}
                           </span>
-                          <span className="text-[hsl(var(--muted-foreground))]"> / </span>
+                          <span className="text-[hsl(var(--muted-foreground))]">·</span>
                           <span className={formatRatingDelta(student.stats?.rapidRatingDelta7d).className}>
-                            {formatRatingDelta(student.stats?.rapidRatingDelta7d).text}
+                            Δ7d {formatRatingDelta(student.stats?.rapidRatingDelta7d).text}
                           </span>
                         </span>
                       </div>
@@ -1695,13 +1706,13 @@ export default function CoachDashboardPage() {
                     {student.stats?.blitzRating !== null && student.stats?.blitzRating !== undefined && student.stats?.blitzRating !== 0 ? (
                       <div className="flex flex-col items-end">
                         <span className="font-medium">{student.stats.blitzRating}</span>
-                        <span className="text-xs whitespace-nowrap">
+                        <span className="text-xs whitespace-nowrap flex items-center gap-1">
                           <span className={formatRatingDelta(student.stats?.blitzRatingDelta24h).className}>
-                            {formatRatingDelta(student.stats?.blitzRatingDelta24h).text}
+                            Δ24h {formatRatingDelta(student.stats?.blitzRatingDelta24h).text}
                           </span>
-                          <span className="text-[hsl(var(--muted-foreground))]"> / </span>
+                          <span className="text-[hsl(var(--muted-foreground))]">·</span>
                           <span className={formatRatingDelta(student.stats?.blitzRatingDelta7d).className}>
-                            {formatRatingDelta(student.stats?.blitzRatingDelta7d).text}
+                            Δ7d {formatRatingDelta(student.stats?.blitzRatingDelta7d).text}
                           </span>
                         </span>
                       </div>
@@ -1723,16 +1734,20 @@ export default function CoachDashboardPage() {
                   <td className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-sm tabular-nums">
                     {student.platform === "chesscom" ? (
                       <span className="text-[hsl(var(--muted-foreground))]">—</span>
-                    ) : student.puzzleDelta7d !== null ? (
-                      <span className={student.puzzleDelta7d > 0 ? "text-green-600 dark:text-green-400 font-semibold" : "text-[hsl(var(--muted-foreground))]"}>
-                        {student.puzzleDelta7d > 0 ? "+" : ""}{student.puzzleDelta7d}
+                    ) : student.stats?.puzzles7d !== null && student.stats?.puzzles7d !== undefined ? (
+                      <span className={(student.stats?.puzzles7d ?? 0) > 0 ? "text-green-600 dark:text-green-400 font-semibold" : "text-[hsl(var(--foreground))]"}>
+                        {student.stats?.puzzles7d}
                       </span>
                     ) : (
                       <span className="text-[hsl(var(--muted-foreground))]">—</span>
                     )}
                   </td>
                   <td className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-sm text-[hsl(var(--foreground))] tabular-nums">
-                    {student.stats?.puzzleRating !== null && student.stats?.puzzleRating !== undefined && student.stats?.puzzleRating !== 0 ? student.stats?.puzzleRating : <span className="text-[hsl(var(--muted-foreground))]">—</span>}
+                    {student.stats?.puzzleRating !== null && student.stats?.puzzleRating !== undefined ? (
+                      student.stats.puzzleRating
+                    ) : (
+                      <span className="text-[hsl(var(--muted-foreground))]">—</span>
+                    )}
                   </td>
                   <td className="border-r border-[hsl(var(--border))] px-3 py-2 text-right text-sm text-[hsl(var(--foreground))] tabular-nums">
                     {student.homeworkCompletionPct}%

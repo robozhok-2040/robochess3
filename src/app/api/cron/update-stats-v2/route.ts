@@ -306,73 +306,132 @@ export async function GET(request: NextRequest) {
           }
         }
 
-        // Compute puzzle total for Lichess users (before upserting player_stats_v2)
+        // Compute puzzle total and rating for Lichess users (before upserting player_stats_v2)
         let puzzleTotal: number | null = null;
         let puzzle24h: number | null = null;
         let puzzle7d: number | null = null;
+        let puzzleRating: number | null = null;
 
         if (platform === 'lichess') {
           const puzzleRes = await computeLichessPuzzleCountsForUser(studentId);
 
           if (puzzleRes.status === 'OK') {
             puzzleTotal = puzzleRes.puzzleTotal;
+            puzzleRating = puzzleRes.puzzleRating;
 
-            // Compute puzzle_24h and puzzle_7d using snapshot-delta method
+            // Compute puzzle_24h and puzzle_7d using improved snapshot-delta method with fallback
             if (puzzleTotal !== null) {
               const window24hStart = new Date(now.getTime() - 24 * 60 * 60 * 1000);
               const window7dStart = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
 
-              // Find baseline snapshot for 24h window: latest snapshot at/<= window24hStart
-              const baseline24h = await prisma.stats_snapshots.findFirst({
+              // Helper function to validate baseline snapshot
+              // Rule #1: baseline.puzzle_total must be NOT null
+              // AND if currentTotal > 0 then baseline.puzzle_total must be > 0
+              const isValidBaseline = (baselineTotal: number | null | undefined): boolean => {
+                if (baselineTotal === null || baselineTotal === undefined) return false;
+                if (puzzleTotal !== null && puzzleTotal > 0) {
+                  return baselineTotal > 0;
+                }
+                return baselineTotal >= 0;
+              };
+
+              // Build WHERE condition for puzzle_total based on currentTotal
+              // Rule #1: if currentTotal > 0, baseline must have puzzle_total > 0; else baseline can be >= 0
+              const puzzleTotalFilter = puzzleTotal !== null && puzzleTotal > 0 
+                ? { gt: 0 }  // If currentTotal > 0, require baseline > 0
+                : { gte: 0 }; // Otherwise, require baseline >= 0 (also excludes null)
+
+              // 24h delta: try baseline before windowStart, then fallback to earliest in window
+              // MAX_BASELINE_DRIFT_MS for 24h window: 12 hours
+              const MAX_BASELINE_DRIFT_24H_MS = 12 * 60 * 60 * 1000;
+              const baseline24hFreshnessThreshold = new Date(window24hStart.getTime() - MAX_BASELINE_DRIFT_24H_MS);
+
+              const baseline24hBefore = await prisma.stats_snapshots.findFirst({
                 where: {
                   user_id: studentId,
+                  source: 'lichess',
                   captured_at: { lte: window24hStart },
+                  puzzle_total: puzzleTotalFilter,
                 },
                 orderBy: { captured_at: 'desc' },
                 select: { puzzle_total: true, captured_at: true },
               });
 
-              // Compute 24h delta only if baseline exists, has valid puzzle_total, and is fresh enough
-              // Baseline is VALID only if captured_at >= (windowStart24 - 12 hours)
-              const baseline24hFreshnessThreshold = new Date(window24hStart.getTime() - 12 * 60 * 60 * 1000);
-              const isBaseline24hValid =
-                baseline24h &&
-                baseline24h.puzzle_total !== null &&
-                baseline24h.puzzle_total !== undefined &&
-                baseline24h.captured_at >= baseline24hFreshnessThreshold;
+              let baseline24hTotal: number | null = null;
+              
+              // Apply freshness guard: baselineAtOrBefore must be within MAX_BASELINE_DRIFT_MS of windowStart
+              if (baseline24hBefore && 
+                  isValidBaseline(baseline24hBefore.puzzle_total) &&
+                  baseline24hBefore.captured_at >= baseline24hFreshnessThreshold) {
+                baseline24hTotal = baseline24hBefore.puzzle_total!;
+              } else {
+                // Fallback: earliest snapshot within the window
+                const baseline24hInWindow = await prisma.stats_snapshots.findFirst({
+                  where: {
+                    user_id: studentId,
+                    source: 'lichess',
+                    captured_at: { gt: window24hStart, lt: now },
+                    puzzle_total: puzzleTotalFilter,
+                  },
+                  orderBy: { captured_at: 'asc' },
+                  select: { puzzle_total: true },
+                });
+                if (baseline24hInWindow && isValidBaseline(baseline24hInWindow.puzzle_total)) {
+                  baseline24hTotal = baseline24hInWindow.puzzle_total!;
+                }
+              }
 
-              if (isBaseline24hValid) {
-                const delta24h = puzzleTotal - baseline24h.puzzle_total;
+              if (baseline24hTotal !== null) {
+                const delta24h = puzzleTotal - baseline24hTotal;
                 puzzle24h = delta24h >= 0 ? delta24h : null; // null if counter reset/anomaly
               } else {
-                // No baseline snapshot, baseline.puzzle_total is null, or baseline is too old
                 puzzle24h = null;
               }
 
-              // Find baseline snapshot for 7d window: latest snapshot at/<= window7dStart
-              const baseline7d = await prisma.stats_snapshots.findFirst({
+              // 7d delta: try baseline before windowStart, then fallback to earliest in window
+              // MAX_BASELINE_DRIFT_MS for 7d window: 24 hours
+              const MAX_BASELINE_DRIFT_7D_MS = 24 * 60 * 60 * 1000;
+              const baseline7dFreshnessThreshold = new Date(window7dStart.getTime() - MAX_BASELINE_DRIFT_7D_MS);
+
+              const baseline7dBefore = await prisma.stats_snapshots.findFirst({
                 where: {
                   user_id: studentId,
+                  source: 'lichess',
                   captured_at: { lte: window7dStart },
+                  puzzle_total: puzzleTotalFilter,
                 },
                 orderBy: { captured_at: 'desc' },
                 select: { puzzle_total: true, captured_at: true },
               });
 
-              // Compute 7d delta only if baseline exists, has valid puzzle_total, and is fresh enough
-              // Baseline is VALID only if captured_at >= (windowStart7d - 24 hours)
-              const baseline7dFreshnessThreshold = new Date(window7dStart.getTime() - 24 * 60 * 60 * 1000);
-              const isBaseline7dValid =
-                baseline7d &&
-                baseline7d.puzzle_total !== null &&
-                baseline7d.puzzle_total !== undefined &&
-                baseline7d.captured_at >= baseline7dFreshnessThreshold;
+              let baseline7dTotal: number | null = null;
+              
+              // Apply freshness guard: baselineAtOrBefore must be within MAX_BASELINE_DRIFT_MS of windowStart
+              if (baseline7dBefore && 
+                  isValidBaseline(baseline7dBefore.puzzle_total) &&
+                  baseline7dBefore.captured_at >= baseline7dFreshnessThreshold) {
+                baseline7dTotal = baseline7dBefore.puzzle_total!;
+              } else {
+                // Fallback: earliest snapshot within the window
+                const baseline7dInWindow = await prisma.stats_snapshots.findFirst({
+                  where: {
+                    user_id: studentId,
+                    source: 'lichess',
+                    captured_at: { gt: window7dStart, lt: now },
+                    puzzle_total: puzzleTotalFilter,
+                  },
+                  orderBy: { captured_at: 'asc' },
+                  select: { puzzle_total: true },
+                });
+                if (baseline7dInWindow && isValidBaseline(baseline7dInWindow.puzzle_total)) {
+                  baseline7dTotal = baseline7dInWindow.puzzle_total!;
+                }
+              }
 
-              if (isBaseline7dValid) {
-                const delta7d = puzzleTotal - baseline7d.puzzle_total;
+              if (baseline7dTotal !== null) {
+                const delta7d = puzzleTotal - baseline7dTotal;
                 puzzle7d = delta7d >= 0 ? delta7d : null; // null if counter reset/anomaly
               } else {
-                // No baseline snapshot, baseline.puzzle_total is null, or baseline is too old
                 puzzle7d = null;
               }
             } else {
@@ -381,11 +440,16 @@ export async function GET(request: NextRequest) {
               puzzle7d = null;
             }
           } else {
-            // On error, puzzleTotal, puzzle24h, puzzle7d remain null
+            // On error, puzzleTotal, puzzle24h, puzzle7d, puzzleRating remain null
             puzzleTotal = null;
             puzzle24h = null;
             puzzle7d = null;
+            puzzleRating = null;
           }
+        } else if (platform === 'chesscom') {
+          // Optional: fetch Chess.com puzzle rating (puzzles 24h/7d not supported)
+          const chesscomRatings = await computeChesscomRatingsForUser(username);
+          puzzleRating = chesscomRatings.puzzleRating;
         }
 
         // Upsert into player_stats_v2 using the unique constraint (student_id + platform)
@@ -507,8 +571,7 @@ export async function GET(request: NextRequest) {
               puzzle_total: puzzleTotal,
               puzzle_24h: puzzle24h,
               puzzle_7d: puzzle7d,
-              // Leave other rating/puzzle fields as default/null/0
-              puzzle_rating: null,
+              puzzle_rating: puzzleRating,
               rapid_total: null,
               blitz_total: null,
             },
