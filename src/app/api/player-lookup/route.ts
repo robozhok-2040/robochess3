@@ -350,41 +350,230 @@ export async function GET(request: NextRequest) {
   // SAVE TO DB
   try {
     const supabase = await createClient();
-    for (const row of rows) {
-      // 1. Check Platform Connection
-      const { data: existing } = await supabase.from("platform_connections")
-        .select("user_id, id").eq("platform", row.platform).eq("platform_username", row.handle).maybeSingle();
-      
-      let userId = existing?.user_id;
+    const nowIso = new Date().toISOString();
 
-      if (!existing) {
-        userId = row.id; // Use generated ID
-        await supabase.from("profiles").insert({ id: userId, full_name: row.nickname, role: "student" });
-        await supabase.from("platform_connections").insert({
-            user_id: userId, platform: row.platform, platform_username: row.handle, last_synced_at: new Date().toISOString()
-        });
-      } else {
-        await supabase.from("platform_connections").update({ last_synced_at: new Date().toISOString() }).eq("id", existing.id);
+    // Guardrail #1: only logged-in coach/admin can write to DB from this endpoint
+    const { data: authData, error: authErr } = await supabase.auth.getUser();
+    const authUser = authData?.user;
+
+    if (authErr || !authUser) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const { data: actorProfile, error: actorProfileErr } = await supabase
+      .from("profiles")
+      .select("id, role")
+      .eq("id", authUser.id)
+      .maybeSingle();
+
+    if (actorProfileErr || !actorProfile) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    if (actorProfile.role !== "coach" && actorProfile.role !== "admin") {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+
+    const actorCoachId = actorProfile.id;
+
+    // One student profile per whole lookup request (lichess + chesscom -> same student_id)
+    let targetStudentId: string | null = null;
+
+    // Prefer an existing STUDENT owner if any of the connections already exists
+    for (const row of rows) {
+      const { data: existingConn } = await supabase
+        .from("platform_connections")
+        .select("id, user_id")
+        .eq("platform", row.platform)
+        .eq("platform_username", row.handle)
+        .maybeSingle();
+
+      if (!existingConn) continue;
+
+      const { data: ownerProfile } = await supabase
+        .from("profiles")
+        .select("id, role, added_by_coach_id")
+        .eq("id", existingConn.user_id)
+        .maybeSingle();
+
+      if (ownerProfile?.role === "student") {
+        targetStudentId = ownerProfile.id;
+        break;
+      }
+    }
+
+    if (!targetStudentId) {
+      targetStudentId = crypto.randomUUID();
+    }
+
+    // Create the student profile if missing (do NOT overwrite existing)
+    await supabase
+      .from("profiles")
+      .upsert(
+        {
+          id: targetStudentId,
+          full_name: normalizedUsername,
+          role: "student",
+          ...(actorProfile.role === "coach" ? { added_by_coach_id: actorCoachId } : {}),
+        },
+        { onConflict: "id", ignoreDuplicates: true }
+      );
+
+    // Re-read target profile to enforce ownership / role
+    const { data: targetProfile, error: targetProfileErr } = await supabase
+      .from("profiles")
+      .select("id, role, added_by_coach_id")
+      .eq("id", targetStudentId)
+      .maybeSingle();
+
+    if (targetProfileErr || !targetProfile) {
+      return NextResponse.json({ error: "Failed to load target profile" }, { status: 500 });
+    }
+
+    if (targetProfile.role !== "student") {
+      return NextResponse.json(
+        { error: "Target profile is not a student (data integrity issue)" },
+        { status: 500 }
+      );
+    }
+
+    // Guardrail #3: coach cannot steal someone else's student; coach can claim orphan
+    if (actorProfile.role === "coach") {
+      if (targetProfile.added_by_coach_id && targetProfile.added_by_coach_id !== actorCoachId) {
+        return NextResponse.json(
+          { error: "This student is already linked to another coach" },
+          { status: 409 }
+        );
       }
 
-      // 2. Insert Snapshot
+      if (!targetProfile.added_by_coach_id) {
+        await supabase
+          .from("profiles")
+          .update({ added_by_coach_id: actorCoachId })
+          .eq("id", targetStudentId);
+      }
+    }
+
+    for (const row of rows) {
+      // 1) Check if this (platform, username) is already linked in DB
+      const { data: existing, error: existingErr } = await supabase
+        .from("platform_connections")
+        .select("id, user_id")
+        .eq("platform", row.platform)
+        .eq("platform_username", row.handle)
+        .maybeSingle();
+
+      if (existingErr) {
+        console.error("platform_connections lookup error:", existingErr);
+        continue;
+      }
+
+      if (existing) {
+        // Guardrail #2: existing connection must belong to a STUDENT profile
+        const { data: ownerProfile, error: ownerErr } = await supabase
+          .from("profiles")
+          .select("id, role, added_by_coach_id")
+          .eq("id", existing.user_id)
+          .maybeSingle();
+
+        if (ownerErr) {
+          console.error("profiles lookup error:", ownerErr);
+          continue;
+        }
+
+        if (ownerProfile && ownerProfile.role !== "student") {
+          // Misattached connection (e.g., coach/admin) -> move it to student
+          await supabase
+            .from("platform_connections")
+            .update({ user_id: targetStudentId, last_synced_at: nowIso })
+            .eq("id", existing.id);
+        } else {
+          // It is already owned by a student profile
+          if (existing.user_id !== targetStudentId) {
+            // Do NOT auto-merge two different student profiles
+            return NextResponse.json(
+              {
+                error: `${row.platform} account '${row.handle}' is already linked to a different student`,
+              },
+              { status: 409 }
+            );
+          }
+
+          // Update last_synced_at
+          await supabase
+            .from("platform_connections")
+            .update({ last_synced_at: nowIso })
+            .eq("id", existing.id);
+
+          // (Optional) claim orphan on the owner student too
+          if (actorProfile.role === "coach") {
+            const { data: ownerStudent } = await supabase
+              .from("profiles")
+              .select("id, added_by_coach_id")
+              .eq("id", existing.user_id)
+              .maybeSingle();
+
+            if (ownerStudent && !ownerStudent.added_by_coach_id) {
+              await supabase
+                .from("profiles")
+                .update({ added_by_coach_id: actorCoachId })
+                .eq("id", existing.user_id);
+            }
+          }
+        }
+      } else {
+        // No existing (platform, username). Ensure target student doesn't already have another username for same platform.
+        const { data: existingForStudent } = await supabase
+          .from("platform_connections")
+          .select("id, platform_username")
+          .eq("user_id", targetStudentId)
+          .eq("platform", row.platform)
+          .maybeSingle();
+
+        if (existingForStudent && existingForStudent.platform_username !== row.handle) {
+          return NextResponse.json(
+            {
+              error: `Student already has a different ${row.platform} connection (${existingForStudent.platform_username}). Resolve manually.`,
+            },
+            { status: 409 }
+          );
+        }
+
+        if (!existingForStudent) {
+          await supabase.from("platform_connections").insert({
+            user_id: targetStudentId,
+            platform: row.platform,
+            platform_username: row.handle,
+            last_synced_at: nowIso,
+          });
+        } else {
+          // Same platform+student exists with same username -> just bump last_synced_at
+          await supabase
+            .from("platform_connections")
+            .update({ last_synced_at: nowIso })
+            .eq("id", existingForStudent.id);
+        }
+      }
+
+      // 2) Insert Snapshot (store stats under the ONE student_id)
       await supabase.from("stats_snapshots").insert({
-        user_id: userId,
+        user_id: targetStudentId,
         source: row.platform,
         rapid_rating: row.rapidRating,
         blitz_rating: row.blitzRating,
         puzzle_rating: row.puzzleRating,
         rapid_24h: row.rapidGames24h,
-        rapid_7d: row.rapidGames7d,  // ✅ ADDED: Persist computed 7d value
+        rapid_7d: row.rapidGames7d,
         blitz_24h: row.blitzGames24h,
-        blitz_7d: row.blitzGames7d,  // ✅ ADDED: Persist computed 7d value
+        blitz_7d: row.blitzGames7d,
         puzzle_24h: row.puzzlesSolved24h,
-        puzzle_7d: 0,  // ✅ ADDED: Set to 0 (puzzle_7d not computed in player-lookup, only 24h)
-        captured_at: new Date().toISOString(),
+        puzzle_7d: 0,
+        captured_at: nowIso,
       });
     }
   } catch (e) {
     console.error("DB Save error:", e);
+  }
   }
 
   return NextResponse.json({ rows, debug });
