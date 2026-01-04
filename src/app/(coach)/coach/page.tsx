@@ -1006,7 +1006,17 @@ export default function CoachDashboardPage() {
     loadDevCoaches();
   }, [isDevMode]);
 
+  // Normalize username for API (case-insensitive for Lichess and Chess.com)
+  const normalizeUsernameForAPI = (username: string): string => {
+    return username.trim().toLowerCase();
+  };
+
   const handleAdd = async () => {
+    // Double-submit prevention: ignore if already adding
+    if (isAdding) {
+      return;
+    }
+
     const trimmedNickname = nicknameInput.trim();
     
     // Validate non-empty
@@ -1020,13 +1030,26 @@ export default function CoachDashboardPage() {
     setIsAdding(true);
 
     try {
+      // Normalize username before sending (case-insensitive)
+      const normalizedUsername = normalizeUsernameForAPI(trimmedNickname);
+      
       const response = await fetch(
-        `/api/player-lookup?username=${encodeURIComponent(trimmedNickname)}`,
+        `/api/player-lookup?username=${encodeURIComponent(normalizedUsername)}`,
         withDevCoachHeaders()
       );
 
       if (response.ok) {
         const data = await response.json();
+        
+        // Handle idempotent success (already_linked status)
+        if (data.status === 'already_linked' || data.ok === true) {
+          // Treat as success: refresh the list
+          setNicknameInput("");
+          // Refresh students list to show the existing student
+          fetchStudents();
+          return;
+        }
+        
         const apiRows = data.rows || [];
         
         // Map API rows to Student type, initializing delta fields to null (no history yet)
@@ -1070,7 +1093,18 @@ export default function CoachDashboardPage() {
         }
       } else {
         const errorData = await response.json().catch(() => ({ error: "Failed to lookup player" }));
-        setErrorMsg(errorData.error || "Failed to lookup player");
+        
+        // Handle 409 conflict with actionable error message
+        if (response.status === 409 && errorData.existingStudent) {
+          const existingStudent = errorData.existingStudent;
+          const studentName = existingStudent.nickname || `Student ${existingStudent.id.substring(0, 8)}`;
+          setErrorMsg(
+            `This ${errorData.error?.includes('lichess') ? 'Lichess' : 'Chess.com'} account is already linked to student "${studentName}". ` +
+            `Student ID: ${existingStudent.id.substring(0, 8)}...`
+          );
+        } else {
+          setErrorMsg(errorData.error || "Failed to lookup player");
+        }
       }
     } catch (error) {
       setErrorMsg("Network error. Please try again.");
@@ -1089,6 +1123,19 @@ export default function CoachDashboardPage() {
     setHiddenIds([]);
   };
 
+  // Normalize platform to canonical value before sending to API
+  // Handles any UI variations (e.g., "Chess.com", "chess.com") -> "chesscom"
+  const normalizePlatformForAPI = (platform: string): 'lichess' | 'chesscom' | null => {
+    const normalized = platform.toLowerCase().trim();
+    if (normalized === 'lichess' || normalized === 'lichess.org') {
+      return 'lichess';
+    }
+    if (normalized === 'chesscom' || normalized === 'chess.com' || normalized === 'chess_com' || normalized === 'chess-com') {
+      return 'chesscom';
+    }
+    return null;
+  };
+
   // Remove student platform connection (delete specific platform row)
   const handleDelete = async (studentId: string, rowId: string, platform: 'lichess' | 'chesscom') => {
     if (!confirm(`Are you sure you want to remove ${platform} connection for this student?`)) {
@@ -1098,10 +1145,18 @@ export default function CoachDashboardPage() {
     try {
       setErrorMsg(null);
       
-      console.log(`[UI] Delete request: studentId=${studentId}, platform=${platform}, rowId=${rowId}, devCoachId=${devCoachId || 'none'}`);
+      // Normalize platform to canonical value before sending to API
+      const normalizedPlatform = normalizePlatformForAPI(platform);
+      if (!normalizedPlatform) {
+        setErrorMsg(`Invalid platform: ${platform}`);
+        return;
+      }
       
+      console.log(`[UI] Delete request: studentId=${studentId}, platform=${normalizedPlatform} (original: ${platform}), rowId=${rowId}, devCoachId=${devCoachId || 'none'}`);
+      
+      // Ensure we send the SAME dev coach context as used for loading the dashboard
       const response = await fetch(
-        `/api/coach/student/${studentId}?platform=${platform}`,
+        `/api/coach/student/${studentId}?platform=${encodeURIComponent(normalizedPlatform)}`,
         withDevCoachHeaders({ method: "DELETE" })
       );
 
@@ -1112,7 +1167,7 @@ export default function CoachDashboardPage() {
         console.error(`[UI] Delete failed: ${errorMessage}`, {
           status: response.status,
           studentId,
-          platform,
+          platform: normalizedPlatform,
           rowId,
           devCoachId,
         });
@@ -1122,18 +1177,28 @@ export default function CoachDashboardPage() {
       const result = await response.json().catch(() => ({}));
       console.log(`[UI] Delete succeeded:`, result);
 
-      // Remove only the specific row (studentId + platform combination) from local UI state
-      setStudents((prev) => prev.filter((student) => {
-        // Keep rows that don't match this studentId:platform combination
-        const studentIdFromRow = student.student_id || student.id.split(':')[0];
-        const platformFromRow = student.platform;
-        return !(studentIdFromRow === studentId && platformFromRow === platform);
-      }));
+      // Handle idempotent response: ok:true even if removed:0 (already deleted)
+      if (result?.ok) {
+        // Remove only the specific row (studentId + platform combination) from local UI state
+        setStudents((prev) => prev.filter((student) => {
+          // Keep rows that don't match this studentId:platform combination
+          const studentIdFromRow = student.student_id || student.id.split(':')[0];
+          const platformFromRow = student.platform;
+          return !(studentIdFromRow === studentId && platformFromRow === normalizedPlatform);
+        }));
 
-      // Refresh router cache to ensure consistency
-      router.refresh();
+        // Refresh router cache to ensure consistency
+        router.refresh();
 
-      console.log(`Successfully removed student ${studentId}`);
+        if (result.removed === 0) {
+          console.log(`[UI] Delete idempotent: connection already removed (removed: 0)`);
+        } else {
+          console.log(`[UI] Successfully removed student ${studentId}, platform ${normalizedPlatform}`);
+        }
+      } else {
+        // Unexpected response format
+        setErrorMsg("Unexpected response from server");
+      }
     } catch (err) {
       console.error("Error removing student:", err);
       setErrorMsg("Network error. Please try again.");

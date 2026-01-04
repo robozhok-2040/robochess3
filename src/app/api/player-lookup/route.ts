@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/utils/supabase/server";
 import { getActorCoach } from "@/lib/server/devBypass";
+import { normalizePlatform, normalizeUsername } from "@/lib/server/coachContext";
 
 // --- TYPES ---
 type LichessUser = {
@@ -321,7 +322,7 @@ export async function GET(request: NextRequest) {
       id: crypto.randomUUID(),
       nickname: normalizedUsername,
       platform: "lichess",
-      handle: normalizedUsername.toLowerCase(),
+      handle: normalizeUsername("lichess", normalizedUsername) || normalizedUsername.toLowerCase(),
       rapidGames24h: lichessRapid24h,
       rapidGames7d: lichessRapid7d,
       blitzGames24h: lichessBlitz24h,
@@ -338,11 +339,12 @@ export async function GET(request: NextRequest) {
   // Build Chess.com Row
   if (chessComFound) {
     const active = (chesscomRapid24h + chesscomBlitz24h) > 0;
+    const normalizedChesscomHandle = normalizeUsername("chesscom", normalizedUsername) || normalizedUsername.toLowerCase();
     rows.push({
       id: crypto.randomUUID(),
       nickname: normalizedUsername,
       platform: "chesscom",
-      handle: normalizedUsername,
+      handle: normalizedChesscomHandle,
       rapidGames24h: chesscomRapid24h,
       rapidGames7d: chesscomRapid7d,
       blitzGames24h: chesscomBlitz24h,
@@ -455,13 +457,26 @@ export async function GET(request: NextRequest) {
       }
     }
 
+    // Track if any row was already_linked (for idempotent response)
+    let hasAlreadyLinked = false;
+    let alreadyLinkedStudents: Array<{ id: string; nickname: string; platform: string }> = [];
+
     for (const row of rows) {
-      // 1) Check if this (platform, username) is already linked in DB
+      // Normalize username before querying (case-insensitive for Lichess and Chess.com)
+      // row.handle should already be normalized from row construction, but ensure it
+      let normalizedHandle: string;
+      try {
+        normalizedHandle = normalizeUsername(row.platform as 'lichess' | 'chesscom', row.handle);
+      } catch {
+        normalizedHandle = row.handle.toLowerCase().trim();
+      }
+
+      // 1) Check if this (platform, username) is already linked in DB (case-insensitive)
       const { data: existing, error: existingErr } = await supabase
         .from("platform_connections")
-        .select("id, user_id")
+        .select("id, user_id, platform_username")
         .eq("platform", row.platform)
-        .eq("platform_username", row.handle)
+        .eq("platform_username", normalizedHandle)
         .maybeSingle();
 
       if (existingErr) {
@@ -473,7 +488,7 @@ export async function GET(request: NextRequest) {
         // Guardrail #2: existing connection must belong to a STUDENT profile
         const { data: ownerProfile, error: ownerErr } = await supabase
           .from("profiles")
-          .select("id, role, added_by_coach_id")
+          .select("id, username, full_name, role, added_by_coach_id")
           .eq("id", existing.user_id)
           .maybeSingle();
 
@@ -486,27 +501,66 @@ export async function GET(request: NextRequest) {
           // Misattached connection (e.g., coach/admin) -> move it to student
           await supabase
             .from("platform_connections")
-            .update({ user_id: targetStudentId, last_synced_at: nowIso })
+            .update({ user_id: targetStudentId, last_synced_at: nowIso, platform_username: normalizedHandle })
             .eq("id", existing.id);
         } else {
           // It is already owned by a student profile
           if (existing.user_id !== targetStudentId) {
-            // Do NOT auto-merge two different student profiles
-            return NextResponse.json(
-              {
-                error: `${row.platform} account '${row.handle}' is already linked to a different student`,
-              },
-              { status: 409 }
-            );
+            // Check if the existing student belongs to this coach or is unassigned
+            const existingStudentBelongsToThisCoach = ownerProfile && 
+              ownerProfile.role === "student" &&
+              (ownerProfile.added_by_coach_id === actorCoachId || ownerProfile.added_by_coach_id === null);
+
+            if (existingStudentBelongsToThisCoach) {
+              // Already linked to same coach's student or unassigned -> treat as success (idempotent)
+              // Claim the orphan if needed
+              if (ownerProfile && ownerProfile.added_by_coach_id === null && actorRole === "coach") {
+                await supabase
+                  .from("profiles")
+                  .update({ added_by_coach_id: actorCoachId })
+                  .eq("id", existing.user_id);
+              }
+              
+              // Update last_synced_at to refresh the connection
+              await supabase
+                .from("platform_connections")
+                .update({ last_synced_at: nowIso, platform_username: normalizedHandle })
+                .eq("id", existing.id);
+
+              // Track for idempotent response
+              hasAlreadyLinked = true;
+              alreadyLinkedStudents.push({
+                id: existing.user_id,
+                nickname: ownerProfile?.username || ownerProfile?.full_name || normalizedUsername,
+                platform: row.platform,
+              });
+
+              // Continue to next row (treat as success)
+              continue;
+            } else {
+              // Belongs to a different coach -> return 409 with actionable details
+              const existingStudentNickname = ownerProfile?.username || ownerProfile?.full_name || "Unknown";
+              return NextResponse.json(
+                {
+                  error: `${row.platform} account '${row.handle}' is already linked to a different student`,
+                  existingStudent: {
+                    id: existing.user_id,
+                    nickname: existingStudentNickname,
+                    added_by_coach_id: ownerProfile?.added_by_coach_id || null,
+                  },
+                },
+                { status: 409 }
+              );
+            }
           }
 
-          // Update last_synced_at
+          // Same student -> update last_synced_at (idempotent success)
           await supabase
             .from("platform_connections")
-            .update({ last_synced_at: nowIso })
+            .update({ last_synced_at: nowIso, platform_username: normalizedHandle })
             .eq("id", existing.id);
 
-          // (Optional) claim orphan on the owner student too
+          // Claim orphan on the owner student if needed
           if (actorRole === "coach") {
             const { data: ownerStudent } = await supabase
               .from("profiles")
@@ -531,28 +585,104 @@ export async function GET(request: NextRequest) {
           .eq("platform", row.platform)
           .maybeSingle();
 
-        if (existingForStudent && existingForStudent.platform_username !== row.handle) {
-          return NextResponse.json(
-            {
-              error: `Student already has a different ${row.platform} connection (${existingForStudent.platform_username}). Resolve manually.`,
-            },
-            { status: 409 }
-          );
-        }
-
-        if (!existingForStudent) {
-          await supabase.from("platform_connections").insert({
-            user_id: targetStudentId,
-            platform: row.platform,
-            platform_username: row.handle,
-            last_synced_at: nowIso,
-          });
+        if (existingForStudent) {
+          const existingUsername = existingForStudent.platform_username?.toLowerCase() || '';
+          const normalizedExisting = normalizeUsername(row.platform as 'lichess' | 'chesscom', existingUsername);
+          
+          // Case-insensitive comparison
+          if (normalizedExisting && normalizedExisting !== normalizedHandle) {
+            return NextResponse.json(
+              {
+                error: `Student already has a different ${row.platform} connection (${existingForStudent.platform_username}). Resolve manually.`,
+              },
+              { status: 409 }
+            );
+          }
+          // If same username (case-insensitive), update it to normalized version and last_synced_at
+          if (normalizedExisting === normalizedHandle || !normalizedExisting) {
+            await supabase
+              .from("platform_connections")
+              .update({ platform_username: normalizedHandle, last_synced_at: nowIso })
+              .eq("id", existingForStudent.id);
+          }
         } else {
-          // Same platform+student exists with same username -> just bump last_synced_at
-          await supabase
-            .from("platform_connections")
-            .update({ last_synced_at: nowIso })
-            .eq("id", existingForStudent.id);
+          // Create new platform_connection with normalized username
+          try {
+            await supabase.from("platform_connections").insert({
+              user_id: targetStudentId,
+              platform: row.platform,
+              platform_username: normalizedHandle,
+              last_synced_at: nowIso,
+            });
+          } catch (insertErr: any) {
+            // Handle unique constraint violation (Prisma P2002 equivalent in Supabase)
+            if (insertErr?.code === '23505' || insertErr?.message?.includes('unique') || insertErr?.message?.includes('duplicate')) {
+              // Race condition: connection was created between check and insert
+              // Re-query and treat as idempotent success
+              const { data: raceExisting } = await supabase
+                .from("platform_connections")
+                .select("id, user_id")
+                .eq("platform", row.platform)
+                .eq("platform_username", normalizedHandle)
+                .maybeSingle();
+
+              if (raceExisting) {
+                // Verify it belongs to this coach or is unassigned
+                const { data: raceOwner } = await supabase
+                  .from("profiles")
+                  .select("id, added_by_coach_id")
+                  .eq("id", raceExisting.user_id)
+                  .maybeSingle();
+
+                if (raceOwner && (raceOwner.added_by_coach_id === actorCoachId || raceOwner.added_by_coach_id === null)) {
+                  // Idempotent success - track and continue
+                  if (raceOwner.added_by_coach_id === null && actorRole === "coach") {
+                    await supabase
+                      .from("profiles")
+                      .update({ added_by_coach_id: actorCoachId })
+                      .eq("id", raceExisting.user_id);
+                  }
+                  
+                  hasAlreadyLinked = true;
+                  const { data: raceProfile } = await supabase
+                    .from("profiles")
+                    .select("username, full_name")
+                    .eq("id", raceExisting.user_id)
+                    .maybeSingle();
+                  
+                  alreadyLinkedStudents.push({
+                    id: raceExisting.user_id,
+                    nickname: raceProfile?.username || raceProfile?.full_name || normalizedUsername,
+                    platform: row.platform,
+                  });
+                  
+                  continue;
+                }
+              }
+              
+              // If race condition resulted in conflict with another coach's student, return error
+              const { data: conflictOwner } = await supabase
+                .from("profiles")
+                .select("id, username, full_name, added_by_coach_id")
+                .eq("id", raceExisting?.user_id)
+                .maybeSingle();
+
+              if (conflictOwner) {
+                return NextResponse.json(
+                  {
+                    error: `${row.platform} account '${row.handle}' is already linked to a different student`,
+                    existingStudent: {
+                      id: conflictOwner.id,
+                      nickname: conflictOwner.username || conflictOwner.full_name || "Unknown",
+                      added_by_coach_id: conflictOwner.added_by_coach_id,
+                    },
+                  },
+                  { status: 409 }
+                );
+              }
+            }
+            throw insertErr;
+          }
         }
       }
 
@@ -570,6 +700,19 @@ export async function GET(request: NextRequest) {
         puzzle_24h: row.puzzlesSolved24h,
         puzzle_7d: 0,
         captured_at: nowIso,
+      });
+    }
+
+    // If all rows were already_linked, return idempotent success response
+    if (hasAlreadyLinked && rows.length === alreadyLinkedStudents.length) {
+      return NextResponse.json({
+        ok: true,
+        status: 'already_linked',
+        rows: rows.map((row, idx) => ({
+          ...row,
+          id: alreadyLinkedStudents[idx]?.id || row.id,
+        })),
+        debug,
       });
     }
   } catch (e) {

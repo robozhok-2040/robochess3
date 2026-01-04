@@ -59,6 +59,50 @@ export function parseStudentId(input: string | null | undefined): string | null 
 }
 
 /**
+ * Normalize platform string to canonical value ('lichess' or 'chesscom')
+ * Accepts variations: 'Chess.com', 'chess.com', 'chesscom', 'chess_com', etc.
+ * Returns canonical platform or null if invalid
+ */
+export function normalizePlatform(input: string | null | undefined): 'lichess' | 'chesscom' | null {
+  if (!input || typeof input !== 'string') {
+    return null;
+  }
+
+  const normalized = input.toLowerCase().trim();
+
+  // Lichess variants
+  if (normalized === 'lichess' || normalized === 'lichess.org') {
+    return 'lichess';
+  }
+
+  // Chess.com variants
+  if (normalized === 'chesscom' || 
+      normalized === 'chess.com' || 
+      normalized === 'chess_com' ||
+      normalized === 'chess-com' ||
+      normalized === 'chesscom.org' ||
+      normalized === 'chess.com/player') {
+    return 'chesscom';
+  }
+
+  return null;
+}
+
+/**
+ * Normalize username for a platform (case-insensitive for Lichess and Chess.com)
+ * Returns lowercase trimmed username
+ */
+export function normalizeUsername(platform: 'lichess' | 'chesscom', username: string | null | undefined): string | null {
+  if (!username || typeof username !== 'string') {
+    return null;
+  }
+
+  // Both Lichess and Chess.com usernames are case-insensitive
+  // Store in lowercase for consistent matching
+  return username.trim().toLowerCase();
+}
+
+/**
  * Extract hostname from NextRequest
  * Handles x-forwarded-host header and URL parsing
  */
@@ -102,91 +146,33 @@ export function getDevCoachIdFromRequest(request: { headers: Headers; url: strin
  * Get actor coach (authenticated user or dev bypass)
  * Returns { actorCoachId: string, actorRole: 'coach' | 'admin', mode: 'auth' | 'dev-header' | 'dev-env' }
  * or throws error response object { status, error }
+ * 
+ * Uses shared coachContext utilities for consistency
  */
 export async function getActorCoach(
   request: { headers: Headers; url: string; cookies?: any },
   supabase: any,
   prisma?: any
 ): Promise<{ actorCoachId: string; actorRole: 'coach' | 'admin'; mode: 'auth' | 'dev-header' | 'dev-env' }> {
-  const hostname = extractHostname(request);
-  const allowDevBypass = canUseDevBypass({ nodeEnv: process.env.NODE_ENV, hostname });
-
+  // Use shared coachContext for consistent resolution
+  const { resolveCoachId } = await import("@/lib/server/coachContext");
+  
   // Try authenticated user first
-  const { data: authData, error: authErr } = await supabase.auth.getUser();
+  const { data: authData } = await supabase.auth.getUser();
   const authUser = authData?.user;
 
-  if (authUser) {
-    // Authenticated user path
-    const { data: actorProfile, error: actorProfileErr } = await supabase
-      .from("profiles")
-      .select("id, role")
-      .eq("id", authUser.id)
-      .maybeSingle();
-
-    if (actorProfileErr || !actorProfile) {
-      throw { status: 401, error: "Unauthorized" };
-    }
-
-    if (actorProfile.role !== "coach" && actorProfile.role !== "admin") {
-      throw { status: 403, error: "Forbidden" };
-    }
-
-    return { actorCoachId: actorProfile.id, actorRole: actorProfile.role as 'coach' | 'admin', mode: 'auth' };
+  try {
+    const result = await resolveCoachId(request, authUser?.id || null, supabase);
+    // Map to expected return shape
+    return {
+      actorCoachId: result.coachId,
+      actorRole: result.role,
+      mode: result.mode,
+    };
+  } catch (err: any) {
+    // Re-throw with same format
+    throw err;
   }
-
-  // No authenticated user - check for dev bypass
-  if (allowDevBypass) {
-    const headerId = request.headers.get('x-dev-coach-id');
-    const envId = process.env.DEV_COACH_ID;
-    
-    let devCoachIdCandidate: string | null = null;
-    let mode: 'dev-header' | 'dev-env' = 'dev-env';
-
-    if (headerId) {
-      devCoachIdCandidate = headerId;
-      mode = 'dev-header';
-    } else if (envId) {
-      devCoachIdCandidate = envId;
-      mode = 'dev-env';
-    }
-
-    if (!devCoachIdCandidate) {
-      throw {
-        status: 401,
-        error: "Unauthorized. For local dev on localhost select a coach in the UI (dev mode) or provide x-dev-coach-id, or set DEV_COACH_ID."
-      };
-    }
-
-    // Validate dev coach ID
-    const { data: devCoachProfile, error: devCoachErr } = await supabase
-      .from("profiles")
-      .select("id, role")
-      .eq("id", devCoachIdCandidate)
-      .maybeSingle();
-
-    if (devCoachErr || !devCoachProfile) {
-      throw {
-        status: 400,
-        error: "DEV coach id is invalid. It must be a profiles.id of a coach/admin."
-      };
-    }
-
-    if (devCoachProfile.role !== "coach" && devCoachProfile.role !== "admin") {
-      throw {
-        status: 400,
-        error: "DEV coach id is invalid. It must be a profiles.id of a coach/admin."
-      };
-    }
-
-    console.warn(`[DEV BYPASS] Using dev coach id: ${devCoachProfile.id} (role: ${devCoachProfile.role}, mode: ${mode})`);
-    return { actorCoachId: devCoachProfile.id, actorRole: devCoachProfile.role as 'coach' | 'admin', mode };
-  }
-
-  // Production: no auth, no bypass
-  throw {
-    status: 401,
-    error: "Unauthorized. Sign in as coach/admin, or in local dev select a coach or set DEV_COACH_ID."
-  };
 }
 
 /**
