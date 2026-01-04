@@ -10,7 +10,8 @@ import { Badge } from "@/components/ui/badge";
 
 // API Response type - matches the structure from /api/coach/students
 interface ApiStudent {
-  id: string;
+  id: string; // Composite key: student_id:platform (for React key)
+  student_id?: string; // UUID of student profile (for delete operations)
   nickname: string;
   stats: {
     rapidRating: number | null;
@@ -53,6 +54,7 @@ type Student = ApiStudent & {
   homeworkCompletionPct: number;
   puzzleDelta3d: number | null; // Use puzzles3d from API
   puzzleDelta7d: number | null;
+  lastActiveStatus?: 'green' | 'grey'; // Computed: 'green' if active in last 24h, 'grey' otherwise
   // Stats freshness metadata (only for lichess/chesscom)
   statsSource?: "v2" | "none";
   statsComputedAt?: string | null;
@@ -163,6 +165,26 @@ export default function CoachDashboardPage() {
   const [platformFilter, setPlatformFilter] = useState<"all" | "lichess" | "chesscom">("all");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  
+  // Dev mode: coach selector for localhost development
+  const [devCoachId, setDevCoachId] = useState<string | null>(null);
+  const [devCoaches, setDevCoaches] = useState<Array<{ id: string; full_name: string | null; username: string | null; email: string | null; role: string }>>([]);
+  const isDevMode = typeof window !== 'undefined' && process.env.NODE_ENV === 'development' && ['localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname);
+
+  // Helper function to build headers with dev coach ID when in dev mode
+  // Always includes credentials and cache settings for all coach API calls
+  const withDevCoachHeaders = (init: RequestInit = {}): RequestInit => {
+    const headers: HeadersInit = { ...init.headers };
+    if (isDevMode && devCoachId) {
+      headers['x-dev-coach-id'] = devCoachId;
+    }
+    return {
+      ...init,
+      headers,
+      credentials: 'include' as RequestCredentials,
+      cache: 'no-store' as RequestCache,
+    };
+  };
 
   // Helper function to format rating delta for display with color
   function formatRatingDelta(delta: number | null | undefined): { text: string; className: string } {
@@ -218,7 +240,7 @@ export default function CoachDashboardPage() {
   }
 
   // Helper to get badge variant and label from lastActiveStatus
-  function getStatusBadge(status: 'green' | 'grey'): { label: string; variant: "success" | "warning" | "muted" } {
+  function getStatusBadge(status: 'green' | 'grey' | undefined): { label: string; variant: "success" | "warning" | "muted" } {
     if (status === "green") {
       return { label: "Active", variant: "success" };
     }
@@ -864,16 +886,23 @@ export default function CoachDashboardPage() {
       setError(null);
       
       try {
-        const response = await fetch("/api/coach/students");
+        const response = await fetch("/api/coach/students", withDevCoachHeaders());
         
         if (!response.ok) {
-          throw new Error(`Failed to fetch students: ${response.statusText}`);
+          // Try to parse error message from response
+          const errorData = await response.json().catch(() => ({ error: response.statusText }));
+          const errorMessage = errorData.error || `Failed to fetch students (${response.status})`;
+          setError(errorMessage);
+          setLoading(false);
+          return;
         }
         
         const apiData: ApiStudent[] = await response.json();
         
         if (!Array.isArray(apiData)) {
-          throw new Error("Invalid API response format");
+          setError("Invalid API response format");
+          setLoading(false);
+          return;
         }
 
         // Map API response to Student type with defaults for missing fields
@@ -918,10 +947,18 @@ export default function CoachDashboardPage() {
     }
 
     // Start the scheduler on dashboard load (singleton guard ensures it only runs once)
-    fetch("/api/_boot")
-      .then((res) => res.json())
+    fetch("/api/_boot", {
+      cache: 'no-store',
+      credentials: 'include',
+    })
+      .then((res) => {
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`);
+        }
+        return res.json();
+      })
       .then((data) => {
-        if (data.ok) {
+        if (data?.ok) {
           console.log("[BOOT] Scheduler started");
         }
       })
@@ -932,6 +969,42 @@ export default function CoachDashboardPage() {
 
     fetchStudents();
   }, []);
+
+  // Load dev coach list and selection on mount (dev mode only)
+  useEffect(() => {
+    if (!isDevMode) return;
+
+    const loadDevCoaches = async () => {
+      try {
+        // Note: /api/dev/coach-list doesn't need x-dev-coach-id header
+        // (it's used to SELECT a coach, so no coach is selected yet)
+        const response = await fetch('/api/dev/coach-list', {
+          cache: 'no-store',
+          credentials: 'include',
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          const coaches = data.coaches || [];
+          setDevCoaches(coaches);
+
+          // Load saved selection from localStorage
+          const savedCoachId = localStorage.getItem('robochess_dev_coach_id');
+          if (savedCoachId && coaches.some((c: any) => c.id === savedCoachId)) {
+            setDevCoachId(savedCoachId);
+          } else if (coaches.length === 1) {
+            // Auto-select if only one coach
+            setDevCoachId(coaches[0].id);
+            localStorage.setItem('robochess_dev_coach_id', coaches[0].id);
+          }
+        }
+      } catch (error) {
+        console.error('Failed to load dev coaches:', error);
+      }
+    };
+
+    loadDevCoaches();
+  }, [isDevMode]);
 
   const handleAdd = async () => {
     const trimmedNickname = nicknameInput.trim();
@@ -948,7 +1021,8 @@ export default function CoachDashboardPage() {
 
     try {
       const response = await fetch(
-        `/api/player-lookup?username=${encodeURIComponent(trimmedNickname)}`
+        `/api/player-lookup?username=${encodeURIComponent(trimmedNickname)}`,
+        withDevCoachHeaders()
       );
 
       if (response.ok) {
@@ -995,7 +1069,7 @@ export default function CoachDashboardPage() {
           fetchPuzzleStats(updatedStudents);
         }
       } else {
-        const errorData = await response.json();
+        const errorData = await response.json().catch(() => ({ error: "Failed to lookup player" }));
         setErrorMsg(errorData.error || "Failed to lookup player");
       }
     } catch (error) {
@@ -1015,33 +1089,54 @@ export default function CoachDashboardPage() {
     setHiddenIds([]);
   };
 
-  // Delete student permanently from database
-  const handleDelete = async (id: string) => {
-    if (!confirm("Are you sure you want to permanently delete this student from the database?")) {
+  // Remove student platform connection (delete specific platform row)
+  const handleDelete = async (studentId: string, rowId: string, platform: 'lichess' | 'chesscom') => {
+    if (!confirm(`Are you sure you want to remove ${platform} connection for this student?`)) {
       return;
     }
 
     try {
-      // Delete via API route (uses Prisma)
-      const response = await fetch(`/api/coach/student/${id}`, {
-        method: "DELETE",
-      });
+      setErrorMsg(null);
+      
+      console.log(`[UI] Delete request: studentId=${studentId}, platform=${platform}, rowId=${rowId}, devCoachId=${devCoachId || 'none'}`);
+      
+      const response = await fetch(
+        `/api/coach/student/${studentId}?platform=${platform}`,
+        withDevCoachHeaders({ method: "DELETE" })
+      );
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({ error: "Unknown error" }));
-        throw new Error(errorData.error || `HTTP ${response.status}`);
+        const errorMessage = errorData.error || `Failed to remove student (${response.status})`;
+        setErrorMsg(errorMessage);
+        console.error(`[UI] Delete failed: ${errorMessage}`, {
+          status: response.status,
+          studentId,
+          platform,
+          rowId,
+          devCoachId,
+        });
+        return;
       }
 
-      // Remove from local UI state immediately
-      setStudents((prev) => prev.filter((student) => student.id !== id));
+      const result = await response.json().catch(() => ({}));
+      console.log(`[UI] Delete succeeded:`, result);
+
+      // Remove only the specific row (studentId + platform combination) from local UI state
+      setStudents((prev) => prev.filter((student) => {
+        // Keep rows that don't match this studentId:platform combination
+        const studentIdFromRow = student.student_id || student.id.split(':')[0];
+        const platformFromRow = student.platform;
+        return !(studentIdFromRow === studentId && platformFromRow === platform);
+      }));
 
       // Refresh router cache to ensure consistency
       router.refresh();
 
-      console.log(`Successfully deleted student ${id} from database`);
+      console.log(`Successfully removed student ${studentId}`);
     } catch (err) {
-      console.error("Error deleting student:", err);
-      alert(`Failed to delete student: ${err instanceof Error ? err.message : "Check console for details"}`);
+      console.error("Error removing student:", err);
+      setErrorMsg("Network error. Please try again.");
     }
   };
 
@@ -1069,7 +1164,7 @@ export default function CoachDashboardPage() {
 
       // Refresh students list from API
       try {
-        const studentsResponse = await fetch("/api/coach/students");
+        const studentsResponse = await fetch("/api/coach/students", withDevCoachHeaders());
         if (!studentsResponse.ok) {
           throw new Error(`Failed to fetch students: ${studentsResponse.statusText}`);
         }
@@ -1396,57 +1491,80 @@ export default function CoachDashboardPage() {
       {/* Students Table - Full Width */}
       <div className="min-w-0">
         <Card>
-          <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between pb-3">
-            <div>
-              <CardTitle>Students</CardTitle>
-              <CardDescription className="hidden sm:block">Track progress and activity</CardDescription>
+          <CardHeader className="flex flex-col gap-3 pb-3">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <CardTitle>Students</CardTitle>
+                <CardDescription className="hidden sm:block">Track progress and activity</CardDescription>
+              </div>
+              {error && (
+                <div className="w-full sm:w-auto mb-2 sm:mb-0 p-3 rounded-lg border border-red-200 bg-red-50 dark:border-red-800 dark:bg-red-950/30 text-sm text-red-700 dark:text-red-400">
+                  Error: {error}
+                </div>
+              )}
+
+              <div className="flex items-center gap-2">
+                <select
+                  value={platformFilter}
+                  onChange={(e) => setPlatformFilter(e.target.value as "all" | "lichess" | "chesscom")}
+                  className="h-9 px-3 text-sm rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--background))] text-[hsl(var(--foreground))] focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))] focus:ring-offset-2 focus:ring-offset-[hsl(var(--background))] transition-colors"
+                >
+                  <option value="all">All</option>
+                  <option value="lichess">Lichess</option>
+                  <option value="chesscom">Chess.com</option>
+                </select>
+                <div className="group flex items-center w-[200px] sm:w-[220px] focus-within:w-[320px] sm:focus-within:w-[420px] transition-[width] duration-200">
+                  <Input
+                    type="text"
+                    value={nicknameInput}
+                    onChange={(e) => {
+                      setNicknameInput(e.target.value);
+                      setErrorMsg(null);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        handleAdd();
+                      }
+                    }}
+                    placeholder="Add nickname"
+                    className="h-9"
+                  />
+                </div>
+                <Button
+                  size="sm"
+                  onClick={handleAdd}
+                  disabled={isAdding || !nicknameInput.trim()}
+                >
+                  Add
+                </Button>
+              </div>
             </div>
-            {error && (
-              <div className="w-full sm:w-auto mb-2 sm:mb-0 p-3 rounded-lg border border-red-200 bg-red-50 dark:border-red-800 dark:bg-red-950/30 text-sm text-red-700 dark:text-red-400">
-                Error: {error}
+            {isDevMode && devCoaches.length > 0 && (
+              <div className="flex items-center gap-2 text-xs text-[hsl(var(--muted-foreground))]">
+                <span>Dev mode: Acting as coach</span>
+                <select
+                  value={devCoachId || ""}
+                  onChange={(e) => {
+                    const newId = e.target.value;
+                    setDevCoachId(newId);
+                    localStorage.setItem('robochess_dev_coach_id', newId);
+                  }}
+                  className="h-7 px-2 rounded border border-[hsl(var(--border))] bg-[hsl(var(--background))] text-[hsl(var(--foreground))] text-xs"
+                >
+                  {!devCoachId && <option value="">-- Select coach --</option>}
+                  {devCoaches.map((coach) => (
+                    <option key={coach.id} value={coach.id}>
+                      {coach.full_name || coach.username || coach.email || coach.id} ({coach.role})
+                    </option>
+                  ))}
+                </select>
               </div>
             )}
-
-            <div className="flex items-center gap-2">
-              <select
-                value={platformFilter}
-                onChange={(e) => setPlatformFilter(e.target.value as "all" | "lichess" | "chesscom")}
-                className="h-9 px-3 text-sm rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--background))] text-[hsl(var(--foreground))] focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))] focus:ring-offset-2 focus:ring-offset-[hsl(var(--background))] transition-colors"
-              >
-                <option value="all">All</option>
-                <option value="lichess">Lichess</option>
-                <option value="chesscom">Chess.com</option>
-              </select>
-              <div className="group flex items-center w-[200px] sm:w-[220px] focus-within:w-[320px] sm:focus-within:w-[420px] transition-[width] duration-200">
-                <Input
-                  type="text"
-                  value={nicknameInput}
-                  onChange={(e) => {
-                    setNicknameInput(e.target.value);
-                    setErrorMsg(null);
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      handleAdd();
-                    }
-                  }}
-                  placeholder="Add nickname"
-                  className="h-9"
-                />
-              </div>
-              <Button
-                size="sm"
-                onClick={handleAdd}
-                disabled={isAdding || !nicknameInput.trim()}
-              >
-                Add
-              </Button>
-              {errorMsg && (
-                <span className="text-red-600 dark:text-red-400 text-xs whitespace-nowrap">
-                  {errorMsg}
-                </span>
-              )}
-            </div>
+            {errorMsg && (
+              <span className="text-red-600 dark:text-red-400 text-xs whitespace-nowrap">
+                {errorMsg}
+              </span>
+            )}
           </CardHeader>
         <CardContent className="p-0">
           {/* Show all students banner */}
@@ -1775,7 +1893,11 @@ export default function CoachDashboardPage() {
                         variant="ghost"
                         size="sm"
                         className="h-8 w-8 p-0 text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300"
-                        onClick={() => handleDelete(student.id)}
+                        onClick={() => handleDelete(
+                          student.student_id || student.id.split(':')[0], 
+                          student.id,
+                          student.platform
+                        )}
                         title="Delete student"
                         aria-label="Delete student"
                       >

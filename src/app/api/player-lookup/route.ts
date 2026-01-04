@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/utils/supabase/server";
+import { getActorCoach } from "@/lib/server/devBypass";
 
 // --- TYPES ---
 type LichessUser = {
@@ -252,7 +253,7 @@ export async function GET(request: NextRequest) {
   // Debug object init
   const debug = debugMode ? {
     lichess: { errors: [] as string[] },
-    chesscom: { errors: [] as string[] },
+    chesscom: { errors: [] as string[], archiveFetchStatuses: [] as number[] },
     timingsMs: {}
   } : null;
 
@@ -281,17 +282,25 @@ export async function GET(request: NextRequest) {
   }
 
   // 2. CHESS.COM LOOKUP
-  const { found: chessComFound } = await fetchChessComProfile(normalizedUsername, debug ? debug.chesscom : { errors: [] });
+  type ChesscomDebug = { errors: string[]; archiveFetchStatuses: number[] };
+  const chesscomDebug: ChesscomDebug = debug?.chesscom
+    ? {
+        errors: debug.chesscom.errors ?? [],
+        archiveFetchStatuses: debug.chesscom.archiveFetchStatuses ?? [],
+      }
+    : { errors: [], archiveFetchStatuses: [] };
+
+  const { found: chessComFound } = await fetchChessComProfile(normalizedUsername, chesscomDebug);
   
   let chesscomRapid24h = 0, chesscomRapid7d = 0;
   let chesscomBlitz24h = 0, chesscomBlitz7d = 0;
   let chesscomStats = null;
 
   if (chessComFound) {
-    const s = await fetchChessComStats(normalizedUsername, debug ? debug.chesscom : { errors: [] });
+    const s = await fetchChessComStats(normalizedUsername, chesscomDebug);
     chesscomStats = s.stats;
-    const rapid = await countChessComGames(normalizedUsername, "rapid", since24h, since7d, debug ? debug.chesscom : { errors: [], archiveFetchStatuses: [] });
-    const blitz = await countChessComGames(normalizedUsername, "blitz", since24h, since7d, debug ? debug.chesscom : { errors: [], archiveFetchStatuses: [] });
+    const rapid = await countChessComGames(normalizedUsername, "rapid", since24h, since7d, chesscomDebug);
+    const blitz = await countChessComGames(normalizedUsername, "blitz", since24h, since7d, chesscomDebug);
     
     chesscomRapid24h = rapid.games24h;
     chesscomRapid7d = rapid.games7d;
@@ -353,28 +362,20 @@ export async function GET(request: NextRequest) {
     const nowIso = new Date().toISOString();
 
     // Guardrail #1: only logged-in coach/admin can write to DB from this endpoint
-    const { data: authData, error: authErr } = await supabase.auth.getUser();
-    const authUser = authData?.user;
-
-    if (authErr || !authUser) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    // (with dev bypass for localhost in development mode)
+    let actorCoachId: string;
+    let actorRole: string;
+    
+    try {
+      const actor = await getActorCoach(request, supabase);
+      actorCoachId = actor.actorCoachId;
+      actorRole = actor.actorRole;
+    } catch (err: any) {
+      return NextResponse.json(
+        { error: err.error || "Unauthorized" },
+        { status: err.status || 401 }
+      );
     }
-
-    const { data: actorProfile, error: actorProfileErr } = await supabase
-      .from("profiles")
-      .select("id, role")
-      .eq("id", authUser.id)
-      .maybeSingle();
-
-    if (actorProfileErr || !actorProfile) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    if (actorProfile.role !== "coach" && actorProfile.role !== "admin") {
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-    }
-
-    const actorCoachId = actorProfile.id;
 
     // One student profile per whole lookup request (lichess + chesscom -> same student_id)
     let targetStudentId: string | null = null;
@@ -414,7 +415,7 @@ export async function GET(request: NextRequest) {
           id: targetStudentId,
           full_name: normalizedUsername,
           role: "student",
-          ...(actorProfile.role === "coach" ? { added_by_coach_id: actorCoachId } : {}),
+          ...(actorRole === "coach" ? { added_by_coach_id: actorCoachId } : {}),
         },
         { onConflict: "id", ignoreDuplicates: true }
       );
@@ -438,7 +439,7 @@ export async function GET(request: NextRequest) {
     }
 
     // Guardrail #3: coach cannot steal someone else's student; coach can claim orphan
-    if (actorProfile.role === "coach") {
+    if (actorRole === "coach") {
       if (targetProfile.added_by_coach_id && targetProfile.added_by_coach_id !== actorCoachId) {
         return NextResponse.json(
           { error: "This student is already linked to another coach" },
@@ -506,7 +507,7 @@ export async function GET(request: NextRequest) {
             .eq("id", existing.id);
 
           // (Optional) claim orphan on the owner student too
-          if (actorProfile.role === "coach") {
+          if (actorRole === "coach") {
             const { data: ownerStudent } = await supabase
               .from("profiles")
               .select("id, added_by_coach_id")
@@ -573,7 +574,6 @@ export async function GET(request: NextRequest) {
     }
   } catch (e) {
     console.error("DB Save error:", e);
-  }
   }
 
   return NextResponse.json({ rows, debug });
