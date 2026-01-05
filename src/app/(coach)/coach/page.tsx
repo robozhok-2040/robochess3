@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { scheduleLichessRequest } from "@/lib/rateLimiter";
 import { Button } from "@/components/ui/button";
@@ -174,17 +174,82 @@ export default function CoachDashboardPage() {
   // Helper function to build headers with dev coach ID when in dev mode
   // Always includes credentials and cache settings for all coach API calls
   const withDevCoachHeaders = (init: RequestInit = {}): RequestInit => {
-    const headers: HeadersInit = { ...init.headers };
-    if (isDevMode && devCoachId) {
-      headers['x-dev-coach-id'] = devCoachId;
-    }
-    return {
-      ...init,
-      headers,
-      credentials: 'include' as RequestCredentials,
-      cache: 'no-store' as RequestCache,
-    };
+    const headers = new Headers(init.headers);
+if (isDevMode && devCoachId) {
+  headers.set('x-dev-coach-id', devCoachId);
+}
+return {
+  ...init,
+  headers,
+};
+
   };
+
+  // Fetch students from API
+  const fetchStudents = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    
+    try {
+      const response = await fetch("/api/coach/students", withDevCoachHeaders());
+      
+      if (!response.ok) {
+        // Try to parse error message from response
+        const errorData = await response.json().catch(() => ({ error: response.statusText }));
+        const errorMessage = errorData.error || `Failed to fetch students (${response.status})`;
+        setError(errorMessage);
+        setLoading(false);
+        return;
+      }
+      
+      const apiData: ApiStudent[] = await response.json();
+      
+      if (!Array.isArray(apiData)) {
+        setError("Invalid API response format");
+        setLoading(false);
+        return;
+      }
+
+      // Map API response to Student type with defaults for missing fields
+      const mappedStudents: Student[] = apiData.map((item: ApiStudent) => {
+        // Compute lastActiveStatus: 'green' if active in last 24h (has games or puzzles), 'grey' otherwise
+        const hasActivity24h = (item.stats?.rapidGames24h ?? 0) + (item.stats?.blitzGames24h ?? 0) + (item.stats?.puzzles3d ?? 0) > 0;
+        const lastActiveStatus: 'green' | 'grey' = hasActivity24h ? 'green' : 'grey';
+        
+        return {
+          ...item,
+          lastActiveStatus,
+          platform: (item.platform === "lichess" || item.platform === "chesscom" ? item.platform : "lichess") as "lichess" | "chesscom",
+          handle: item.platform_username || item.nickname, // Use platform_username if available, otherwise nickname
+          // CRITICAL: Read from item.stats (the API response structure)
+          // Preserve nulls from API for proper "—" display
+          rapidGames24h: item.stats?.rapidGames24h ?? null,
+          rapidGames7d: item.stats?.rapidGames7d ?? null,
+          blitzGames24h: item.stats?.blitzGames24h ?? null,
+          blitzGames7d: item.stats?.blitzGames7d ?? null,
+          homeworkCompletionPct: 0, // API doesn't provide this yet
+          // Map puzzle fields from API (preserve nulls, do not coerce to 0)
+          puzzleDelta3d: item.stats?.puzzles3d ?? null,
+          puzzleDelta7d: item.stats?.puzzles7d ?? null,
+          // Ensure stats object has all puzzle fields explicitly mapped
+          stats: {
+            ...item.stats,
+            puzzles3d: item.stats?.puzzles3d ?? null,
+            puzzles7d: item.stats?.puzzles7d ?? null,
+            puzzle_total: item.stats?.puzzle_total ?? null,
+            puzzleRating: item.stats?.puzzleRating ?? null,
+          },
+        };
+      });
+
+      setStudents(mappedStudents);
+    } catch (error) {
+      console.error("Error fetching students:", error);
+      setError(error instanceof Error ? error.message : "Failed to load students");
+    } finally {
+      setLoading(false);
+    }
+  }, [isDevMode, devCoachId]);
 
   // Helper function to format rating delta for display with color
   function formatRatingDelta(delta: number | null | undefined): { text: string; className: string } {
@@ -881,70 +946,6 @@ export default function CoachDashboardPage() {
 
   // Fetch students from API on mount and start scheduler
   useEffect(() => {
-    async function fetchStudents() {
-      setLoading(true);
-      setError(null);
-      
-      try {
-        const response = await fetch("/api/coach/students", withDevCoachHeaders());
-        
-        if (!response.ok) {
-          // Try to parse error message from response
-          const errorData = await response.json().catch(() => ({ error: response.statusText }));
-          const errorMessage = errorData.error || `Failed to fetch students (${response.status})`;
-          setError(errorMessage);
-          setLoading(false);
-          return;
-        }
-        
-        const apiData: ApiStudent[] = await response.json();
-        
-        if (!Array.isArray(apiData)) {
-          setError("Invalid API response format");
-          setLoading(false);
-          return;
-        }
-
-        // Map API response to Student type with defaults for missing fields
-        const mappedStudents: Student[] = apiData.map((item: ApiStudent) => {
-          // Compute lastActiveStatus: 'green' if active in last 24h (has games or puzzles), 'grey' otherwise
-          const hasActivity24h = (item.stats?.rapidGames24h ?? 0) + (item.stats?.blitzGames24h ?? 0) + (item.stats?.puzzles3d ?? 0) > 0;
-          const lastActiveStatus: 'green' | 'grey' = hasActivity24h ? 'green' : 'grey';
-          
-          return {
-            ...item,
-            lastActiveStatus,
-            platform: (item.platform === "lichess" || item.platform === "chesscom" ? item.platform : "lichess") as "lichess" | "chesscom",
-            handle: item.platform_username || item.nickname, // Use platform_username if available, otherwise nickname
-            // CRITICAL: Read from item.stats (the API response structure)
-            // Preserve nulls from API for proper "—" display
-            rapidGames24h: item.stats?.rapidGames24h ?? null,
-            rapidGames7d: item.stats?.rapidGames7d ?? null,
-            blitzGames24h: item.stats?.blitzGames24h ?? null,
-            blitzGames7d: item.stats?.blitzGames7d ?? null,
-            homeworkCompletionPct: 0, // API doesn't provide this yet
-            // Map puzzle fields from API (preserve nulls, do not coerce to 0)
-            puzzleDelta3d: item.stats?.puzzles3d ?? null,
-            puzzleDelta7d: item.stats?.puzzles7d ?? null,
-            // Ensure stats object has all puzzle fields explicitly mapped
-            stats: {
-              ...item.stats,
-              puzzles3d: item.stats?.puzzles3d ?? null,
-              puzzles7d: item.stats?.puzzles7d ?? null,
-              puzzle_total: item.stats?.puzzle_total ?? null,
-              puzzleRating: item.stats?.puzzleRating ?? null,
-            },
-          };
-        });
-
-        setStudents(mappedStudents);
-      } catch (error) {
-        console.error("Error fetching students:", error);
-        setError(error instanceof Error ? error.message : "Failed to load students");
-      } finally {
-        setLoading(false);
-      }
-    }
 
     // Start the scheduler on dashboard load (singleton guard ensures it only runs once)
     fetch("/api/_boot", {
@@ -1046,7 +1047,7 @@ export default function CoachDashboardPage() {
           // Treat as success: refresh the list
           setNicknameInput("");
           // Refresh students list to show the existing student
-          fetchStudents();
+          void fetchStudents();
           return;
         }
         
