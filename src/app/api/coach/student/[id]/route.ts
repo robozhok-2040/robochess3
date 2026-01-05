@@ -8,14 +8,14 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const { id: idFromParams } = await params;
+    const { id } = await params;
     const searchParams = request.nextUrl.searchParams;
     const platformInput = searchParams.get('platform');
 
     // Parse and validate student ID (must be UUID)
-    const studentId = parseStudentId(idFromParams);
+    const studentId = parseStudentId(id);
     if (!studentId) {
-      console.error(`[DELETE student] Invalid studentId format: ${idFromParams}`);
+      console.error(`[DELETE student] Invalid studentId format: ${id}`);
       return NextResponse.json({ error: "Invalid student id" }, { status: 400 });
     }
 
@@ -123,4 +123,3 @@ export async function DELETE(
     }, { status: 500 });
   }
 }
-
