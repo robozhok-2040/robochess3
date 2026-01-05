@@ -26,7 +26,7 @@ export async function GET(request: NextRequest) {
       platform: string;
       platform_username: string | null;
       last_synced_at: Date | null;
-      profiles: { id: string; role: string } | null;
+      profiles: { id: string; role: string | null } | null;
     }> = [];
 
     // If studentId and platform are provided, process only that specific student+platform
@@ -632,7 +632,7 @@ export async function GET(request: NextRequest) {
               rapid_7d: null,
               blitz_24h: null,
               blitz_7d: null,
-              computed_at: null,
+              // computed_at omitted on failure to indicate stale data (will be null in DB)
               last_update_ok: false,
               last_update_error_code: errorCode || null,
               last_update_error_message: errorMessage.substring(0, 500),

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-
+import { createClient } from "@/utils/supabase/server";
 import { prisma } from "@/lib/prisma";
 
 export const dynamic = 'force-dynamic';
@@ -11,8 +11,35 @@ export async function GET(request: NextRequest) {
     const searchParams = request.nextUrl.searchParams;
     const debug = searchParams.get('debug') === '1';
 
+    const supabase = await createClient();
+
+    // Resolve actor (coach/admin) - unified helper handles auth + dev bypass
+    // This ensures list and delete use the same ownership rules
+    let actorCoachId: string;
+    let actorRole: 'coach' | 'admin';
+    try {
+      const { getActorCoach } = await import("@/lib/server/devBypass");
+      const actor = await getActorCoach(request, supabase);
+      actorCoachId = actor.actorCoachId;
+      actorRole = actor.actorRole;
+    } catch (err: any) {
+      // Return proper error status so UI can display it
+      return NextResponse.json(
+        { error: err.error || "Unauthorized" },
+        { status: err.status || 401 }
+      );
+    }
+
+    // Build where clause: filter by ownership for coaches
+    const whereClause: any = { role: "student" };
+    if (actorRole === 'coach') {
+      // Coach can only see students they added
+      whereClause.added_by_coach_id = actorCoachId;
+    }
+    // Admin can see all students (no additional filter)
+
     const students = await prisma.profiles.findMany({
-      where: { role: "student" },
+      where: whereClause,
       include: {
         platform_connections: true,
         stats_snapshots: {
@@ -91,6 +118,7 @@ export async function GET(request: NextRequest) {
       if (student.platform_connections.length === 0) {
         return [{
           id: `${student.id}:None`,
+          student_id: student.id, // UUID of student profile (for delete/other operations)
           nickname: student.username || student.full_name || "Unnamed",
           platform: "None",
           platform_username: "",
@@ -133,19 +161,19 @@ export async function GET(request: NextRequest) {
         const isV2Platform = platform === 'lichess' || platform === 'chesscom';
         
         let statsSource: "v2" | "legacy" | "none" = "none";
-        let rapidGames24h: number | null;
-        let rapidGames7d: number | null;
-        let blitzGames24h: number | null;
-        let blitzGames7d: number | null;
-        let puzzleTotal: number | null;
-        let puzzle24h: number | null;
-        let puzzle7d: number | null;
-        let rapidRating: number | null;
-        let blitzRating: number | null;
-        let rapidRatingDelta24h: number | null;
-        let rapidRatingDelta7d: number | null;
-        let blitzRatingDelta24h: number | null;
-        let blitzRatingDelta7d: number | null;
+        let rapidGames24h: number | null = null;
+        let rapidGames7d: number | null = null;
+        let blitzGames24h: number | null = null;
+        let blitzGames7d: number | null = null;
+        let puzzleTotal: number | null = null;
+        let puzzle24h: number | null = null;
+        let puzzle7d: number | null = null;
+        let rapidRating: number | null = null;
+        let blitzRating: number | null = null;
+        let rapidRatingDelta24h: number | null = null;
+        let rapidRatingDelta7d: number | null = null;
+        let blitzRatingDelta24h: number | null = null;
+        let blitzRatingDelta7d: number | null = null;
 
         // Stats freshness metadata (for lichess/chesscom only)
         let statsComputedAt: string | null = null;
@@ -240,6 +268,7 @@ export async function GET(request: NextRequest) {
 
         const result: any = {
           id: `${student.id}:${platform}`, // Unique composite key: student_id:platform
+          student_id: student.id, // UUID of student profile (for delete/other operations)
           nickname: student.username || student.full_name || "Unnamed",
           platform: platform,
           platform_username: connection.platform_username || "",

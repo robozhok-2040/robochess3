@@ -1,10 +1,18 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { randomUUID } from "crypto";
 
 import { prisma } from "@/lib/prisma";
+import { canUseDevBypass, extractHostname } from "@/lib/server/devBypass";
 
 export const dynamic = 'force-dynamic';
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  // Dev-only guard: only allow in development on localhost
+  const hostname = extractHostname(request);
+  if (!canUseDevBypass({ nodeEnv: process.env.NODE_ENV, hostname })) {
+    return NextResponse.json({ ok: false }, { status: 404 });
+  }
+
   try {
     const testEmail = "test_db_check@example.com";
     const testUsername = "TEST_PLAYER_DB_CHECK";
@@ -17,6 +25,7 @@ export async function GET() {
     if (!user) {
       user = await prisma.profiles.create({
         data: {
+          id: randomUUID(),
           email: testEmail,
           username: testUsername,
           role: "student"
