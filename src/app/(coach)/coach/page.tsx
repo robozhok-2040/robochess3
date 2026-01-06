@@ -1211,8 +1211,8 @@ return {
     setUpdateStatsStatus("Updating...");
     
     try {
-      // Call v2 stats endpoint (replaces legacy /api/cron/update-stats)
-      const response = await fetch("/api/cron/update-stats-v2?limit=100&offset=0");
+      // Call coach-authorized sync endpoint (replaces direct cron endpoint call)
+      const response = await fetch("/api/coach/sync-stats-v2?limit=100&offset=0", withDevCoachHeaders());
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({ error: "Unknown error" }));
