@@ -1,0 +1,686 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/utils/supabase/server';
+import { prisma } from '@/lib/prisma';
+import { computeFromLichess, computeFromChessCom } from '@/lib/stats/gamesActivityV2';
+import { computeLichessPuzzleCountsForUser } from '@/lib/stats/computeLichessPuzzleCountsForUser';
+import { computeChesscomRatingsForUser } from '@/lib/stats/computeChesscomRatingsForUser';
+
+export const dynamic = 'force-dynamic';
+export const runtime = 'nodejs';
+
+/**
+ * Core sync logic - processes connections and updates stats
+ * Shared between cron and coach endpoints
+ */
+async function processStatsSync(
+  connectionsToProcess: Array<{
+    id: string;
+    user_id: string;
+    platform: string;
+    platform_username: string | null;
+    last_synced_at: Date | null;
+    profiles: { id: string; role: string | null } | null;
+  }>,
+  now: Date
+): Promise<{
+  succeeded: Array<{
+    studentId: string;
+    platform: string;
+    username: string;
+    ok: true;
+  }>;
+  failed: Array<{
+    studentId: string;
+    platform: string;
+    username: string;
+    ok: false;
+    errorCode?: string;
+    errorMessage: string;
+  }>;
+}> {
+  const succeeded: Array<{
+    studentId: string;
+    platform: string;
+    username: string;
+    ok: true;
+  }> = [];
+
+  const failed: Array<{
+    studentId: string;
+    platform: string;
+    username: string;
+    ok: false;
+    errorCode?: string;
+    errorMessage: string;
+  }> = [];
+
+  // Process each connection sequentially
+  for (let i = 0; i < connectionsToProcess.length; i++) {
+    const connection = connectionsToProcess[i];
+    const studentId = connection.user_id;
+    const platform = connection.platform as 'lichess' | 'chesscom';
+    const username = connection.platform_username!;
+
+    // Extract error code from error message (check for 429 rate limit)
+    let errorCode: string | undefined = undefined;
+    let errorMessage = '';
+    let updateOk = false;
+
+    try {
+      console.log(`[sync-stats-v2] Processing ${platform}/${username} (studentId: ${studentId})`);
+
+      // Compute stats using the pure computation module (throws on API failure)
+      let counts;
+      if (platform === 'lichess') {
+        counts = await computeFromLichess({
+          username,
+          now,
+          token: process.env.LICHESS_TOKEN ?? undefined,
+        });
+      } else if (platform === 'chesscom') {
+        counts = await computeFromChessCom({
+          username,
+          now,
+        });
+      } else {
+        throw new Error(`Unsupported platform: ${platform}`);
+      }
+
+      // Only update database if computation succeeded (no throw)
+      // Map from camelCase (module) to snake_case (DB)
+      const stats = {
+        rapid_24h: counts.rapid24h,
+        rapid_7d: counts.rapid7d,
+        blitz_24h: counts.blitz24h,
+        blitz_7d: counts.blitz7d,
+      };
+
+      // Fetch current ratings for Lichess users
+      let rapidRating: number | null = null;
+      let blitzRating: number | null = null;
+
+      if (platform === 'lichess') {
+        try {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout
+
+          const userResponse = await fetch(`https://lichess.org/api/user/${username}`, {
+            signal: controller.signal,
+            headers: {
+              'Accept': 'application/json',
+            },
+          });
+
+          clearTimeout(timeoutId);
+
+          if (userResponse.ok) {
+            const userData = await userResponse.json();
+            rapidRating = userData?.perfs?.rapid?.rating ?? null;
+            blitzRating = userData?.perfs?.blitz?.rating ?? null;
+          }
+        } catch (ratingError) {
+          // Non-fatal: log but continue without ratings
+          console.warn(`[sync-stats-v2] Failed to fetch ratings for ${platform}/${username}:`, ratingError);
+        }
+      } else if (platform === 'chesscom') {
+        // Fetch Chess.com ratings
+        const chesscomRatings = await computeChesscomRatingsForUser(username);
+        rapidRating = chesscomRatings.rapidRating;
+        blitzRating = chesscomRatings.blitzRating;
+      }
+
+      // Compute rating deltas using snapshot baseline method (before creating new snapshot)
+      let rapidRatingDelta24h: number | null = null;
+      let rapidRatingDelta7d: number | null = null;
+      let blitzRatingDelta24h: number | null = null;
+      let blitzRatingDelta7d: number | null = null;
+
+      if (rapidRating !== null || blitzRating !== null) {
+        const window24hStart = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+        const window7dStart = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+
+        // Find baseline snapshot for 24h window
+        const baseline24h = await prisma.stats_snapshots.findFirst({
+          where: {
+            user_id: studentId,
+            captured_at: { lte: window24hStart },
+          },
+          orderBy: { captured_at: 'desc' },
+          select: { rapid_rating: true, blitz_rating: true, captured_at: true },
+        });
+
+        // Baseline is VALID only if captured_at >= (windowStart24 - 12 hours)
+        const baseline24hFreshnessThreshold = new Date(window24hStart.getTime() - 12 * 60 * 60 * 1000);
+        const isBaseline24hValid =
+          baseline24h &&
+          baseline24h.captured_at >= baseline24hFreshnessThreshold;
+
+        if (isBaseline24hValid) {
+          // Compute rapid rating delta 24h
+          if (rapidRating !== null && baseline24h.rapid_rating !== null && baseline24h.rapid_rating !== undefined) {
+            const delta = rapidRating - baseline24h.rapid_rating;
+            rapidRatingDelta24h = !isNaN(delta) ? delta : null;
+          }
+
+          // Compute blitz rating delta 24h
+          if (blitzRating !== null && baseline24h.blitz_rating !== null && baseline24h.blitz_rating !== undefined) {
+            const delta = blitzRating - baseline24h.blitz_rating;
+            blitzRatingDelta24h = !isNaN(delta) ? delta : null;
+          }
+        }
+
+        // Find baseline snapshot for 7d window
+        const baseline7d = await prisma.stats_snapshots.findFirst({
+          where: {
+            user_id: studentId,
+            captured_at: { lte: window7dStart },
+          },
+          orderBy: { captured_at: 'desc' },
+          select: { rapid_rating: true, blitz_rating: true, captured_at: true },
+        });
+
+        // Baseline is VALID only if captured_at >= (windowStart7d - 24 hours)
+        const baseline7dFreshnessThreshold = new Date(window7dStart.getTime() - 24 * 60 * 60 * 1000);
+        const isBaseline7dValid =
+          baseline7d &&
+          baseline7d.captured_at >= baseline7dFreshnessThreshold;
+
+        if (isBaseline7dValid) {
+          // Compute rapid rating delta 7d
+          if (rapidRating !== null && baseline7d.rapid_rating !== null && baseline7d.rapid_rating !== undefined) {
+            const delta = rapidRating - baseline7d.rapid_rating;
+            rapidRatingDelta7d = !isNaN(delta) ? delta : null;
+          }
+
+          // Compute blitz rating delta 7d
+          if (blitzRating !== null && baseline7d.blitz_rating !== null && baseline7d.blitz_rating !== undefined) {
+            const delta = blitzRating - baseline7d.blitz_rating;
+            blitzRatingDelta7d = !isNaN(delta) ? delta : null;
+          }
+        }
+      }
+
+      // Compute puzzle total and rating for Lichess users (before upserting player_stats_v2)
+      let puzzleTotal: number | null = null;
+      let puzzle24h: number | null = null;
+      let puzzle7d: number | null = null;
+      let puzzleRating: number | null = null;
+
+      if (platform === 'lichess') {
+        const puzzleRes = await computeLichessPuzzleCountsForUser(studentId);
+
+        if (puzzleRes.status === 'OK') {
+          puzzleTotal = puzzleRes.puzzleTotal;
+          puzzleRating = puzzleRes.puzzleRating;
+
+          // Compute puzzle_24h and puzzle_7d using improved snapshot-delta method with fallback
+          if (puzzleTotal !== null) {
+            const window24hStart = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+            const window7dStart = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+
+            // Helper function to validate baseline snapshot
+            // Rule #1: baseline.puzzle_total must be NOT null
+            // AND if currentTotal > 0 then baseline.puzzle_total must be > 0
+            const isValidBaseline = (baselineTotal: number | null | undefined): boolean => {
+              if (baselineTotal === null || baselineTotal === undefined) return false;
+              if (puzzleTotal !== null && puzzleTotal > 0) {
+                return baselineTotal > 0;
+              }
+              return baselineTotal >= 0;
+            };
+
+            // Build WHERE condition for puzzle_total based on currentTotal
+            // Rule #1: if currentTotal > 0, baseline must have puzzle_total > 0; else baseline can be >= 0
+            const puzzleTotalFilter = puzzleTotal !== null && puzzleTotal > 0 
+              ? { gt: 0 }  // If currentTotal > 0, require baseline > 0
+              : { gte: 0 }; // Otherwise, require baseline >= 0 (also excludes null)
+
+            // 24h delta: try baseline before windowStart, then fallback to earliest in window
+            // MAX_BASELINE_DRIFT_MS for 24h window: 12 hours
+            const MAX_BASELINE_DRIFT_24H_MS = 12 * 60 * 60 * 1000;
+            const baseline24hFreshnessThreshold = new Date(window24hStart.getTime() - MAX_BASELINE_DRIFT_24H_MS);
+
+            const baseline24hBefore = await prisma.stats_snapshots.findFirst({
+              where: {
+                user_id: studentId,
+                source: 'lichess',
+                captured_at: { lte: window24hStart },
+                puzzle_total: puzzleTotalFilter,
+              },
+              orderBy: { captured_at: 'desc' },
+              select: { puzzle_total: true, captured_at: true },
+            });
+
+            let baseline24hTotal: number | null = null;
+            
+            // Apply freshness guard: baselineAtOrBefore must be within MAX_BASELINE_DRIFT_MS of windowStart
+            if (baseline24hBefore && 
+                isValidBaseline(baseline24hBefore.puzzle_total) &&
+                baseline24hBefore.captured_at >= baseline24hFreshnessThreshold) {
+              baseline24hTotal = baseline24hBefore.puzzle_total!;
+            } else {
+              // Fallback: earliest snapshot within the window
+              const baseline24hInWindow = await prisma.stats_snapshots.findFirst({
+                where: {
+                  user_id: studentId,
+                  source: 'lichess',
+                  captured_at: { gt: window24hStart, lt: now },
+                  puzzle_total: puzzleTotalFilter,
+                },
+                orderBy: { captured_at: 'asc' },
+                select: { puzzle_total: true },
+              });
+              if (baseline24hInWindow && isValidBaseline(baseline24hInWindow.puzzle_total)) {
+                baseline24hTotal = baseline24hInWindow.puzzle_total!;
+              }
+            }
+
+            if (baseline24hTotal !== null) {
+              const delta24h = puzzleTotal - baseline24hTotal;
+              puzzle24h = delta24h >= 0 ? delta24h : null; // null if counter reset/anomaly
+            } else {
+              puzzle24h = null;
+            }
+
+            // 7d delta: try baseline before windowStart, then fallback to earliest in window
+            // MAX_BASELINE_DRIFT_MS for 7d window: 24 hours
+            const MAX_BASELINE_DRIFT_7D_MS = 24 * 60 * 60 * 1000;
+            const baseline7dFreshnessThreshold = new Date(window7dStart.getTime() - MAX_BASELINE_DRIFT_7D_MS);
+
+            const baseline7dBefore = await prisma.stats_snapshots.findFirst({
+              where: {
+                user_id: studentId,
+                source: 'lichess',
+                captured_at: { lte: window7dStart },
+                puzzle_total: puzzleTotalFilter,
+              },
+              orderBy: { captured_at: 'desc' },
+              select: { puzzle_total: true, captured_at: true },
+            });
+
+            let baseline7dTotal: number | null = null;
+            
+            // Apply freshness guard: baselineAtOrBefore must be within MAX_BASELINE_DRIFT_MS of windowStart
+            if (baseline7dBefore && 
+                isValidBaseline(baseline7dBefore.puzzle_total) &&
+                baseline7dBefore.captured_at >= baseline7dFreshnessThreshold) {
+              baseline7dTotal = baseline7dBefore.puzzle_total!;
+            } else {
+              // Fallback: earliest snapshot within the window
+              const baseline7dInWindow = await prisma.stats_snapshots.findFirst({
+                where: {
+                  user_id: studentId,
+                  source: 'lichess',
+                  captured_at: { gt: window7dStart, lt: now },
+                  puzzle_total: puzzleTotalFilter,
+                },
+                orderBy: { captured_at: 'asc' },
+                select: { puzzle_total: true },
+              });
+              if (baseline7dInWindow && isValidBaseline(baseline7dInWindow.puzzle_total)) {
+                baseline7dTotal = baseline7dInWindow.puzzle_total!;
+              }
+            }
+
+            if (baseline7dTotal !== null) {
+              const delta7d = puzzleTotal - baseline7dTotal;
+              puzzle7d = delta7d >= 0 ? delta7d : null; // null if counter reset/anomaly
+            } else {
+              puzzle7d = null;
+            }
+          } else {
+            // puzzleTotal is null, so puzzle_24h and puzzle_7d must be null
+            puzzle24h = null;
+            puzzle7d = null;
+          }
+        } else {
+          // On error, puzzleTotal, puzzle24h, puzzle7d, puzzleRating remain null
+          puzzleTotal = null;
+          puzzle24h = null;
+          puzzle7d = null;
+          puzzleRating = null;
+        }
+      } else if (platform === 'chesscom') {
+        // Optional: fetch Chess.com puzzle rating (puzzles 24h/7d not supported)
+        const chesscomRatings = await computeChesscomRatingsForUser(username);
+        puzzleRating = chesscomRatings.puzzleRating;
+      }
+
+      // Upsert into player_stats_v2 using the unique constraint (student_id + platform)
+      // ALWAYS upsert with computed_at set to now(), even when counts are 0
+      await prisma.player_stats_v2.upsert({
+        where: {
+          student_id_platform: {
+            student_id: studentId,
+            platform: platform === 'chesscom' ? 'chesscom' : platform,
+          },
+        },
+        update: {
+          rapid_24h: stats.rapid_24h,
+          rapid_7d: stats.rapid_7d,
+          blitz_24h: stats.blitz_24h,
+          blitz_7d: stats.blitz_7d,
+          puzzle_total: puzzleTotal,
+          puzzle_24h: puzzle24h,
+          puzzle_7d: puzzle7d,
+          rapid_rating_delta_24h: rapidRatingDelta24h,
+          rapid_rating_delta_7d: rapidRatingDelta7d,
+          blitz_rating_delta_24h: blitzRatingDelta24h,
+          blitz_rating_delta_7d: blitzRatingDelta7d,
+          computed_at: now,
+          last_update_ok: true,
+          last_update_error_code: null,
+          last_update_error_message: null,
+          last_update_attempt_at: now,
+        },
+        create: {
+          student_id: studentId,
+          platform: platform === 'chesscom' ? 'chesscom' : platform,
+          rapid_24h: stats.rapid_24h,
+          rapid_7d: stats.rapid_7d,
+          blitz_24h: stats.blitz_24h,
+          blitz_7d: stats.blitz_7d,
+          puzzle_total: puzzleTotal,
+          puzzle_24h: puzzle24h,
+          puzzle_7d: puzzle7d,
+          rapid_rating_delta_24h: rapidRatingDelta24h,
+          rapid_rating_delta_7d: rapidRatingDelta7d,
+          blitz_rating_delta_24h: blitzRatingDelta24h,
+          blitz_rating_delta_7d: blitzRatingDelta7d,
+          computed_at: now,
+          last_update_ok: true,
+          last_update_error_code: null,
+          last_update_error_message: null,
+          last_update_attempt_at: now,
+        },
+      });
+
+      console.log(`[sync-stats-v2] upserted player_stats_v2 studentId=${studentId} platform=${platform} computed_at=${now.toISOString()}`);
+
+      // Update platform_connections.last_synced_at when sync succeeded
+      await prisma.platform_connections.update({
+        where: {
+          id: connection.id,
+        },
+        data: {
+          last_synced_at: now,
+        },
+      });
+
+      // Main success path completed - student is now considered succeeded
+      updateOk = true;
+      succeeded.push({
+        studentId,
+        platform,
+        username,
+        ok: true,
+      });
+
+      console.log(
+        `[sync-stats-v2] ✓ Success: ${platform}/${username} - rapid: ${stats.rapid_24h}/${stats.rapid_7d}, blitz: ${stats.blitz_24h}/${stats.blitz_7d}`
+      );
+
+      // Fallback: if ratings are null, try to preserve last known values from previous snapshot
+      let finalRapidRating = rapidRating;
+      let finalBlitzRating = blitzRating;
+      
+      if (rapidRating === null || blitzRating === null) {
+        const lastSnapshot = await prisma.stats_snapshots.findFirst({
+          where: {
+            user_id: studentId,
+            source: platform, // platform-specific snapshot
+          },
+          orderBy: { captured_at: 'desc' },
+          select: {
+            rapid_rating: true,
+            blitz_rating: true,
+          },
+        });
+        
+        if (lastSnapshot) {
+          if (finalRapidRating === null && lastSnapshot.rapid_rating !== null) {
+            finalRapidRating = lastSnapshot.rapid_rating;
+          }
+          if (finalBlitzRating === null && lastSnapshot.blitz_rating !== null) {
+            finalBlitzRating = lastSnapshot.blitz_rating;
+          }
+        }
+      }
+
+      // Insert snapshot history (NON-FATAL: wrapped in try/catch)
+      // If snapshot insertion fails, log warning but don't fail the student sync
+      // This snapshot is needed for rating deltas and to track current rating values
+      try {
+        await prisma.stats_snapshots.create({
+          data: {
+            user_id: studentId,
+            captured_at: now,
+            source: platform, // platform is 'lichess' or 'chesscom' (matches DB constraint)
+            rapid_rating: finalRapidRating,
+            blitz_rating: finalBlitzRating,
+            rapid_24h: stats.rapid_24h,
+            rapid_7d: stats.rapid_7d,
+            blitz_24h: stats.blitz_24h,
+            blitz_7d: stats.blitz_7d,
+            puzzle_total: puzzleTotal,
+            puzzle_24h: puzzle24h,
+            puzzle_7d: puzzle7d,
+            puzzle_rating: puzzleRating,
+            rapid_total: null,
+            blitz_total: null,
+          },
+        });
+      } catch (snapshotError) {
+        // Log warning but don't fail the student sync
+        console.warn(
+          `[sync-stats-v2] Warning: Failed to insert snapshot for ${platform}/${username} (studentId: ${studentId}):`,
+          snapshotError instanceof Error ? snapshotError.message : String(snapshotError)
+        );
+      }
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : String(error);
+      
+      // Extract error code: check for 429 rate limit in error message
+      // Error format from gamesActivityV2: "Lichess {perfType} API returned {status} {statusText} for {username}"
+      if (errorMessage.includes('429') || errorMessage.includes('rate limit')) {
+        errorCode = 'RATE_LIMIT';
+      }
+
+      console.error(`[sync-stats-v2] ✗ Failed: ${platform}/${username} (studentId: ${studentId}) - ${errorMessage}${errorCode ? ` [${errorCode}]` : ''}`);
+
+      failed.push({
+        studentId,
+        platform,
+        username,
+        ok: false,
+        errorCode,
+        errorMessage,
+      });
+
+      // Persist failure info to player_stats_v2 (even on failure, we track the attempt)
+      // Note: On failure, we do NOT set computed_at (it remains null) to indicate stale data
+      try {
+        await prisma.player_stats_v2.upsert({
+          where: {
+            student_id_platform: {
+              student_id: studentId,
+              platform: platform === 'chesscom' ? 'chesscom' : platform,
+            },
+          },
+          update: {
+            last_update_ok: false,
+            last_update_error_code: errorCode || null,
+            last_update_error_message: errorMessage.substring(0, 500), // Limit message length
+            last_update_attempt_at: now,
+            // Do NOT update computed_at on failure - leave it as-is (null or old value)
+          },
+          create: {
+            student_id: studentId,
+            platform: platform === 'chesscom' ? 'chesscom' : platform,
+            rapid_24h: null,
+            rapid_7d: null,
+            blitz_24h: null,
+            blitz_7d: null,
+            // computed_at omitted on failure to indicate stale data (will be null in DB)
+            last_update_ok: false,
+            last_update_error_code: errorCode || null,
+            last_update_error_message: errorMessage.substring(0, 500),
+            last_update_attempt_at: now,
+          },
+        });
+      } catch (dbError) {
+        // Log but don't fail - we've already recorded the failure
+        console.warn(
+          `[sync-stats-v2] Warning: Failed to persist error info for ${platform}/${username} (studentId: ${studentId}):`,
+          dbError instanceof Error ? dbError.message : String(dbError)
+        );
+      }
+    }
+  }
+
+  return { succeeded, failed };
+}
+
+export async function POST(request: NextRequest) {
+  return handleRequest(request);
+}
+
+export async function GET(request: NextRequest) {
+  return handleRequest(request);
+}
+
+async function handleRequest(request: NextRequest) {
+  const startTime = Date.now();
+  console.log('[sync-stats-v2] Starting sync...');
+
+  try {
+    const supabase = await createClient();
+
+    // Resolve actor (coach/admin) - unified helper handles auth + dev bypass
+    let actorCoachId: string;
+    let actorRole: 'coach' | 'admin';
+    try {
+      const { getActorCoach } = await import("@/lib/server/devBypass");
+      const actor = await getActorCoach(request, supabase);
+      actorCoachId = actor.actorCoachId;
+      actorRole = actor.actorRole;
+    } catch (err: any) {
+      // Return proper error status so UI can display it
+      return NextResponse.json(
+        { error: err.error || "Unauthorized" },
+        { status: err.status || 401 }
+      );
+    }
+
+    // Parse query params
+    const searchParams = request.nextUrl.searchParams;
+    const limitRaw = searchParams.get('limit');
+    const offsetRaw = searchParams.get('offset');
+    
+    let limit = limitRaw ? parseInt(limitRaw, 10) : 50;
+    if (isNaN(limit) || limit < 1) limit = 1;
+    if (limit > 100) limit = 100;
+    
+    let offset = offsetRaw ? parseInt(offsetRaw, 10) : 0;
+    if (isNaN(offset) || offset < 0) offset = 0;
+
+    // Determine "now" once at the start of the run
+    const now = new Date();
+
+    // Load platform_connections where platform IN ('lichess','chesscom')
+    // Filter by coach ownership: coaches can only sync their own students
+    const whereClause: any = {
+      platform: {
+        in: ['lichess', 'chesscom'],
+      },
+    };
+
+    // If coach (not admin), filter to only their students
+    if (actorRole === 'coach') {
+      whereClause.profiles = {
+        role: 'student',
+        added_by_coach_id: actorCoachId,
+      };
+    } else {
+      // Admin can sync all students
+      whereClause.profiles = {
+        role: 'student',
+      };
+    }
+
+    const connections = await prisma.platform_connections.findMany({
+      where: whereClause,
+      include: {
+        profiles: {
+          select: {
+            id: true,
+            role: true,
+            added_by_coach_id: true,
+          },
+        },
+      },
+    });
+
+    // Filter to only students with valid usernames (non-null and non-empty)
+    const eligibleConnections = connections.filter(
+      (conn) =>
+        conn.profiles?.role === 'student' &&
+        conn.platform_username &&
+        conn.platform_username.trim() !== ''
+    );
+
+    // Sort by last_synced_at (nulls last) for consistent processing order
+    eligibleConnections.sort((a, b) => {
+      if (!a.last_synced_at && !b.last_synced_at) return 0;
+      if (!a.last_synced_at) return 1; // nulls last
+      if (!b.last_synced_at) return -1;
+      return b.last_synced_at.getTime() - a.last_synced_at.getTime(); // desc
+    });
+
+    const connectionsToProcess = eligibleConnections.slice(offset, offset + limit);
+
+    if (connectionsToProcess.length === 0) {
+      console.log('[sync-stats-v2] No eligible connections found');
+      return NextResponse.json({
+        ok: false,
+        error: 'No eligible connections found',
+        processed: 0,
+        succeeded: 0,
+        failed: [],
+      });
+    }
+
+    console.log(`[sync-stats-v2] Processing ${connectionsToProcess.length} connection(s)`);
+
+    // Process connections using shared sync logic
+    const { succeeded, failed } = await processStatsSync(connectionsToProcess, now);
+
+    const duration = Date.now() - startTime;
+    console.log(
+      `[sync-stats-v2] Completed in ${duration}ms - succeeded: ${succeeded.length}, failed: ${failed.length}`
+    );
+
+    return NextResponse.json({
+      ok: true,
+      processed: connectionsToProcess.length,
+      succeeded: succeeded.length,
+      failed: failed.length,
+      succeededItems: succeeded,
+      failedItems: failed,
+    });
+  } catch (error) {
+    const duration = Date.now() - startTime;
+    console.error(`[sync-stats-v2] Fatal error after ${duration}ms:`, error);
+    return NextResponse.json(
+      {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+        processed: 0,
+        succeeded: 0,
+        failed: [],
+      },
+      { status: 500 }
+    );
+  }
+}
+
