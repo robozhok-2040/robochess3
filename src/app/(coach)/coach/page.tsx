@@ -1951,7 +1951,7 @@ return {
                         aria-label="Hide student"
                       >
                         <span className="hidden lg:inline">Hide</span>
-                        <span className="lg:hidden">👁</span>
+                        <span className="lg:hidden">View</span>
                       </Button>
 
                       {/* Delete Button (visible) */}
@@ -1967,7 +1967,7 @@ return {
                         title="Delete student"
                         aria-label="Delete student"
                       >
-                        🗑
+                        Delete
                       </Button>
                     </div>
                   </td>
