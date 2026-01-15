@@ -23,8 +23,10 @@ const CACHE_TTL_MS = 2000;
 
 export async function GET(request: NextRequest) {
   const requestId = crypto.randomUUID();
-    const searchParams = request.nextUrl.searchParams;
-    const debug = searchParams.get('debug') === '1';
+  const searchParams = request.nextUrl.searchParams;
+  const debug = searchParams.get('debug') === '1';
+  const debugEnabled = debug;
+  const cacheEnabled = process.env.NODE_ENV !== 'production';
 
   // Pipeline function that performs the actual work
   // Returns a plain object payload, not NextResponse
@@ -602,8 +604,8 @@ export async function GET(request: NextRequest) {
     });
   }
 
-  // If debug=1, always execute pipeline without cache
-  if (debug) {
+  // Helper to execute pipeline and return NextResponse
+  async function executeAndReturnResponse(): Promise<NextResponse> {
     try {
       const payload = await executePipeline();
       const body = JSON.stringify(payload.data);
@@ -628,7 +630,17 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  // For non-debug requests: use cache
+  // If debug=1, always execute pipeline without cache
+  if (debugEnabled) {
+    return await executeAndReturnResponse();
+  }
+
+  // If cache is disabled (production), always execute pipeline
+  if (!cacheEnabled) {
+    return await executeAndReturnResponse();
+  }
+
+  // For dev mode non-debug requests: use cache
   try {
     // First, resolve coachId for cache key (quick auth check)
     const supabase = await createClient();
@@ -639,12 +651,7 @@ export async function GET(request: NextRequest) {
       cacheKey = `${actor.actorCoachId}:${actor.actorRole}`;
     } catch (err: any) {
       // Auth failed, execute pipeline to return proper error
-      const payload = await executePipeline();
-      const body = JSON.stringify(payload.data);
-      return new NextResponse(body, {
-        status: payload.status,
-        headers: { 'content-type': 'application/json' },
-      });
+      return await executeAndReturnResponse();
     }
 
     // Check cache
