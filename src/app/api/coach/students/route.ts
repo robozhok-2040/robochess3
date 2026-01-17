@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@/utils/supabase/server";
 import { prisma } from "@/lib/prisma";
 import { Prisma } from "@prisma/client";
 import { runWithRequestContext, getRequestContext } from "@/lib/server/requestContext";
+import { getCoachContextCached } from "@/lib/server/coachContext";
 // Import to register Prisma query counter middleware
 import "@/lib/server/prismaQueryCounter";
 
@@ -13,6 +13,11 @@ export const revalidate = 0; // Disable cache to show fresh DB data immediately
 // In-memory anti-storm cache (TTL 2000ms)
 type CachePayload = { body: string; status: number };
 type CacheEntry = { expiresAt: number; promise: Promise<CachePayload> };
+type ActorContext = Awaited<ReturnType<typeof getCoachContextCached>>;
+type ExecutePipelineOptions = {
+  actorContextPromise?: Promise<ActorContext>;
+  authDurationMs?: number;
+};
 
 const g = globalThis as any;
 const CACHE_KEY = '__rcCoachStudentsCache';
@@ -30,7 +35,9 @@ export async function GET(request: NextRequest) {
 
   // Pipeline function that performs the actual work
   // Returns a plain object payload, not NextResponse
-  async function executePipeline(): Promise<{ data: any; status: number }> {
+  async function executePipeline(options?: ExecutePipelineOptions): Promise<{ data: any; status: number }> {
+    const actorContextPromise = options?.actorContextPromise;
+    const authDurationMs = options?.authDurationMs;
     return await runWithRequestContext(requestId, async () => {
       const context = getRequestContext()!;
       let responseStatus = 200;
@@ -48,17 +55,23 @@ export async function GET(request: NextRequest) {
       }
 
       try {
-    const supabase = await createClient();
-
     // Resolve actor (coach/admin) - unified helper handles auth + dev bypass
     // This ensures list and delete use the same ownership rules
         let actorCoachId: string = '';
         let actorRole: 'coach' | 'admin' = 'coach';
     try {
-          const actorResult = await timed('auth', async () => {
-      const { getActorCoach } = await import("@/lib/server/devBypass");
-            return await getActorCoach(request, supabase);
-          });
+          let actorResult: ActorContext;
+          if (actorContextPromise && authDurationMs !== undefined) {
+            timings.auth = authDurationMs;
+            actorResult = await actorContextPromise;
+          } else {
+            actorResult = await timed('auth', async () => {
+              if (actorContextPromise) {
+                return await actorContextPromise;
+              }
+              return await getCoachContextCached(request);
+            });
+          }
           actorCoachId = actorResult.actorCoachId;
           actorRole = actorResult.actorRole;
     } catch (err: any) {
@@ -605,9 +618,9 @@ export async function GET(request: NextRequest) {
   }
 
   // Helper to execute pipeline and return NextResponse
-  async function executeAndReturnResponse(): Promise<NextResponse> {
+  async function executeAndReturnResponse(options?: ExecutePipelineOptions): Promise<NextResponse> {
     try {
-      const payload = await executePipeline();
+      const payload = await executePipeline(options);
       const body = JSON.stringify(payload.data);
       return new NextResponse(body, {
         status: payload.status,
@@ -643,15 +656,18 @@ export async function GET(request: NextRequest) {
   // For dev mode non-debug requests: use cache
   try {
     // First, resolve coachId for cache key (quick auth check)
-    const supabase = await createClient();
+    const actorContextPromise = getCoachContextCached(request);
     let cacheKey: string;
+    let authDurationMs = 0;
+    const authStart = Date.now();
     try {
-      const { getActorCoach } = await import("@/lib/server/devBypass");
-      const actor = await getActorCoach(request, supabase);
+      const actor = await actorContextPromise;
+      authDurationMs = Date.now() - authStart;
       cacheKey = `${actor.actorCoachId}:${actor.actorRole}`;
     } catch (err: any) {
+      authDurationMs = Date.now() - authStart;
       // Auth failed, execute pipeline to return proper error
-      return await executeAndReturnResponse();
+      return await executeAndReturnResponse({ actorContextPromise, authDurationMs });
     }
 
     // Check cache
@@ -670,7 +686,7 @@ export async function GET(request: NextRequest) {
 
     // Cache miss or expired: create new cache entry
     const expiresAt = now + CACHE_TTL_MS;
-    const promise = executePipeline()
+    const promise = executePipeline({ actorContextPromise, authDurationMs })
       .then((payload) => {
         // Stringify payload and return cache payload
         const body = JSON.stringify(payload.data);
