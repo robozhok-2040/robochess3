@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@/utils/supabase/server';
+import { getCoachUserId } from "@/lib/server/coachAuth";
 import { prisma } from '@/lib/prisma';
 import { computeFromLichess, computeFromChessCom } from '@/lib/stats/gamesActivityV2';
 import { computeLichessPuzzleCountsForUser } from '@/lib/stats/computeLichessPuzzleCountsForUser';
@@ -554,22 +554,9 @@ async function handleRequest(request: NextRequest) {
   console.log('[sync-stats-v2] Starting sync...');
 
   try {
-    const supabase = await createClient();
-
-    // Resolve actor (coach/admin) - unified helper handles auth + dev bypass
-    let actorCoachId: string;
-    let actorRole: 'coach' | 'admin';
-    try {
-      const { getActorCoach } = await import("@/lib/server/devBypass");
-      const actor = await getActorCoach(request, supabase);
-      actorCoachId = actor.actorCoachId;
-      actorRole = actor.actorRole;
-    } catch (err: any) {
-      // Return proper error status so UI can display it
-      return NextResponse.json(
-        { error: err.error || "Unauthorized" },
-        { status: err.status || 401 }
-      );
+    const coachId = await getCoachUserId(request);
+    if (!coachId) {
+      return NextResponse.json({ error: "UNAUTHORIZED" }, { status: 401 });
     }
 
     // Parse query params
@@ -596,17 +583,10 @@ async function handleRequest(request: NextRequest) {
     };
 
     // If coach (not admin), filter to only their students
-    if (actorRole === 'coach') {
-      whereClause.profiles = {
-        role: 'student',
-        added_by_coach_id: actorCoachId,
-      };
-    } else {
-      // Admin can sync all students
-      whereClause.profiles = {
-        role: 'student',
-      };
-    }
+    whereClause.profiles = {
+      role: 'student',
+      added_by_coach_id: coachId,
+    };
 
     const connections = await prisma.platform_connections.findMany({
       where: whereClause,
@@ -683,4 +663,6 @@ async function handleRequest(request: NextRequest) {
     );
   }
 }
+
+
 
