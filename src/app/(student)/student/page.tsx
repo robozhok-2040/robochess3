@@ -1,6 +1,5 @@
 import { PageShell } from "@/components/layout/page-shell";
-import { EmptyState } from "@/components/ui/empty-state";
-import { Button } from "@/components/ui/button";
+import IchuckyCard from "./IchuckyCard";
 
 export default function StudentPage() {
   return (
@@ -8,16 +7,12 @@ export default function StudentPage() {
       title="Analytics"
       description="View your progress and performance analytics"
     >
-      <EmptyState
-        title="Analytics Coming Soon"
-        description="In the MVP, we will add personalized analytics showing your progress, strengths, and areas for improvement."
-        action={
-          <Button variant="outline" disabled>
-            Coming Soon
-          </Button>
-        }
-        icon="📈"
-      />
+      <div className="grid gap-6">
+        <div className="text-lg font-semibold text-[hsl(var(--foreground))]">
+          Student Home v0.1
+        </div>
+        <IchuckyCard />
+      </div>
     </PageShell>
   );
 }

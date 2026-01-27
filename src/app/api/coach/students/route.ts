@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
+import { createClient } from "@/utils/supabase/server";
 import { prisma } from "@/lib/prisma";
 import { Prisma } from "@prisma/client";
 import { runWithRequestContext, getRequestContext } from "@/lib/server/requestContext";
-import { getCoachContextCached } from "@/lib/server/coachContext";
+import { getCoachUserId } from "@/lib/server/coachAuth";
 // Import to register Prisma query counter middleware
 import "@/lib/server/prismaQueryCounter";
 
@@ -13,11 +14,6 @@ export const revalidate = 0; // Disable cache to show fresh DB data immediately
 // In-memory anti-storm cache (TTL 2000ms)
 type CachePayload = { body: string; status: number };
 type CacheEntry = { expiresAt: number; promise: Promise<CachePayload> };
-type ActorContext = Awaited<ReturnType<typeof getCoachContextCached>>;
-type ExecutePipelineOptions = {
-  actorContextPromise?: Promise<ActorContext>;
-  authDurationMs?: number;
-};
 
 const g = globalThis as any;
 const CACHE_KEY = '__rcCoachStudentsCache';
@@ -35,9 +31,7 @@ export async function GET(request: NextRequest) {
 
   // Pipeline function that performs the actual work
   // Returns a plain object payload, not NextResponse
-  async function executePipeline(options?: ExecutePipelineOptions): Promise<{ data: any; status: number }> {
-    const actorContextPromise = options?.actorContextPromise;
-    const authDurationMs = options?.authDurationMs;
+  async function executePipeline(): Promise<{ data: any; status: number }> {
     return await runWithRequestContext(requestId, async () => {
       const context = getRequestContext()!;
       let responseStatus = 200;
@@ -55,41 +49,44 @@ export async function GET(request: NextRequest) {
       }
 
       try {
+    const supabase = await createClient();
+
     // Resolve actor (coach/admin) - unified helper handles auth + dev bypass
     // This ensures list and delete use the same ownership rules
         let actorCoachId: string = '';
         let actorRole: 'coach' | 'admin' = 'coach';
-    try {
-          let actorResult: ActorContext;
-          if (actorContextPromise && authDurationMs !== undefined) {
-            timings.auth = authDurationMs;
-            actorResult = await actorContextPromise;
-          } else {
-            actorResult = await timed('auth', async () => {
-              if (actorContextPromise) {
-                return await actorContextPromise;
-              }
-              return await getCoachContextCached(request);
-            });
-          }
+        try {
+          const actorResult = await timed('auth', async () => {
+            const { getActorCoach } = await import("@/lib/server/devBypass");
+            return await getActorCoach(request, supabase);
+          });
           actorCoachId = actorResult.actorCoachId;
           actorRole = actorResult.actorRole;
-    } catch (err: any) {
-          // Log instrumentation for auth errors
-          const durationMs = Date.now() - context.startedAt;
-          console.log(`[COACH_STUDENTS] id=${context.requestId} status=${err.status || 401} ms=${durationMs} sql=${context.prismaQueryCount}`);
-          
-          const errorResponse: any = { error: err.error || "Unauthorized" };
-          if (debug) {
-            errorResponse.debug = {
-              requestId: context.requestId,
-              durationMs,
-              prismaQueryCount: context.prismaQueryCount,
-            };
+        } catch (err: any) {
+          const fallbackCoachId = await getCoachUserId(request);
+          if (!fallbackCoachId) {
+            // Log instrumentation for auth errors
+            const durationMs = Date.now() - context.startedAt;
+            console.log(`[COACH_STUDENTS] id=${context.requestId} status=${err?.status || 401} ms=${durationMs} sql=${context.prismaQueryCount}`);
+
+            const errorResponse: any = { error: "UNAUTHORIZED" };
+            if (process.env.NODE_ENV !== "production") {
+              errorResponse.message = "Set DEV_COACH_ID in .env.local for dev.";
+            }
+            if (debug) {
+              errorResponse.debug = {
+                requestId: context.requestId,
+                durationMs,
+                prismaQueryCount: context.prismaQueryCount,
+              };
+            }
+
+            return { data: errorResponse, status: err?.status || 401 };
           }
-          
-          return { data: errorResponse, status: err.status || 401 };
-    }
+
+          actorCoachId = fallbackCoachId;
+          actorRole = 'coach';
+        }
 
     // Build where clause: filter by ownership for coaches
     const whereClause: any = { role: "student" };
@@ -618,9 +615,9 @@ export async function GET(request: NextRequest) {
   }
 
   // Helper to execute pipeline and return NextResponse
-  async function executeAndReturnResponse(options?: ExecutePipelineOptions): Promise<NextResponse> {
+  async function executeAndReturnResponse(): Promise<NextResponse> {
     try {
-      const payload = await executePipeline(options);
+      const payload = await executePipeline();
       const body = JSON.stringify(payload.data);
       return new NextResponse(body, {
         status: payload.status,
@@ -656,18 +653,19 @@ export async function GET(request: NextRequest) {
   // For dev mode non-debug requests: use cache
   try {
     // First, resolve coachId for cache key (quick auth check)
-    const actorContextPromise = getCoachContextCached(request);
+    const supabase = await createClient();
     let cacheKey: string;
-    let authDurationMs = 0;
-    const authStart = Date.now();
     try {
-      const actor = await actorContextPromise;
-      authDurationMs = Date.now() - authStart;
+      const { getActorCoach } = await import("@/lib/server/devBypass");
+      const actor = await getActorCoach(request, supabase);
       cacheKey = `${actor.actorCoachId}:${actor.actorRole}`;
     } catch (err: any) {
-      authDurationMs = Date.now() - authStart;
-      // Auth failed, execute pipeline to return proper error
-      return await executeAndReturnResponse({ actorContextPromise, authDurationMs });
+      const fallbackCoachId = await getCoachUserId(request);
+      if (!fallbackCoachId) {
+        // Auth failed, execute pipeline to return proper error
+        return await executeAndReturnResponse();
+      }
+      cacheKey = `${fallbackCoachId}:coach`;
     }
 
     // Check cache
@@ -686,7 +684,7 @@ export async function GET(request: NextRequest) {
 
     // Cache miss or expired: create new cache entry
     const expiresAt = now + CACHE_TTL_MS;
-    const promise = executePipeline({ actorContextPromise, authDurationMs })
+    const promise = executePipeline()
       .then((payload) => {
         // Stringify payload and return cache payload
         const body = JSON.stringify(payload.data);

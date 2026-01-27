@@ -7,3 +7,5 @@ WHERE platform = 'lichess'
 
 COMMIT;
 
+
+

@@ -25,3 +25,5 @@ export function registerPrismaQueryCounter(): void {
 // Register middleware immediately when module loads
 registerPrismaQueryCounter();
 
+
+

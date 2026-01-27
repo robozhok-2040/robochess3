@@ -596,3 +596,5 @@ No "silent edits" are allowed.
 
 - v0.1 (2025-12-25): Initial frozen scope: puzzle counts only (no ratings), Lichess Standard + Storm, Chess.com Rush + Standard puzzles NULL in MVP.
 
+
+

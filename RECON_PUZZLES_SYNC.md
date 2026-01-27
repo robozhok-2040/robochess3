@@ -400,3 +400,5 @@ puzzle_total: latestStats?.puzzle_total ?? 0,
 - Create separate cron endpoint `/api/cron/update-puzzles-v2` or extend existing one
 - Use existing `stats_snapshots` for audit history (with `source='cron:v2:puzzles:lichess'` etc.)
 
+
+
