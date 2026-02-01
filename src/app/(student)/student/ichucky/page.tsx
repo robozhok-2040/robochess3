@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { StaticBoard } from "@/components/chess/StaticBoard";
@@ -37,6 +37,11 @@ type LastMistake = {
   chosenPieceLabel: string;
   chosenFrom: string;
   virtualPiecesSnapshot: Array<{ id: string; label: string; type: string; square: string }>;
+};
+
+type LeaderboardResponse = {
+  me: { userId: string; bestStreak: number };
+  top: Array<{ userId: string; label: string; bestStreak: number }>;
 };
 
 const files = ["a", "b", "c", "d", "e", "f", "g", "h"];
@@ -300,6 +305,9 @@ export default function IchuckyPage() {
   const [gameOver, setGameOver] = useState(false);
   const [lastMistake, setLastMistake] = useState<LastMistake | null>(null);
   const [showDebug, setShowDebug] = useState(false);
+  const [leaderboard, setLeaderboard] = useState<LeaderboardResponse | null>(null);
+  const [leaderboardLoading, setLeaderboardLoading] = useState(true);
+  const [leaderboardError, setLeaderboardError] = useState<string | null>(null);
 
   const isDev = process.env.NODE_ENV === "development";
 
@@ -334,7 +342,7 @@ export default function IchuckyPage() {
       setVirtualPieces([]);
       setTargetSquare(null);
       setCorrectPieceId(null);
-      setMessage("Не вдалося згенерувати завдання, Restart");
+      setMessage("Не вдалося згенерувати завдання, перезапустіть");
       setMessageTone("error");
       return;
     }
@@ -351,6 +359,50 @@ export default function IchuckyPage() {
     setHistory([]);
     setGameOver(false);
     setLastMistake(null);
+  };
+
+  const loadLeaderboard = useCallback(async () => {
+    try {
+      setLeaderboardLoading(true);
+      const response = await fetch("/api/student/ichucky/leaderboard?limit=10", {
+        method: "GET",
+      });
+      if (!response.ok) {
+        throw new Error("Не вдалося завантажити рейтинг");
+      }
+      const payload = (await response.json()) as LeaderboardResponse;
+      setLeaderboard(payload);
+      setLeaderboardError(null);
+    } catch (error) {
+      setLeaderboardError(error instanceof Error ? error.message : "Не вдалося завантажити рейтинг");
+    } finally {
+      setLeaderboardLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadLeaderboard();
+  }, [loadLeaderboard]);
+
+  const logAttempt = async (payload: {
+    isCorrect: boolean;
+    streakAfter: number;
+    piecesCount: number;
+    targetSquare: string;
+    correctPieceId: string;
+    correctPieceLabel: string;
+    chosenPieceId: string;
+    chosenPieceLabel: string;
+  }) => {
+    try {
+      await fetch("/api/student/ichucky/attempt", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    } catch {
+      // Ignore logging errors
+    }
   };
 
   const handlePick = (pieceId: string) => {
@@ -370,6 +422,7 @@ export default function IchuckyPage() {
     setAttempts((prev) => prev + 1);
 
     if (pieceId === correctPieceId) {
+      const nextStreak = streak + 1;
       setCorrect((prev) => prev + 1);
       setStreak((prev) => prev + 1);
       if (correctSnapshot && chosenSnapshot) {
@@ -386,6 +439,17 @@ export default function IchuckyPage() {
             virtualSnapshotBefore: snapshot,
           },
         ]);
+        void logAttempt({
+          isCorrect: true,
+          streakAfter: nextStreak,
+          piecesCount: pieceCount,
+          targetSquare,
+          correctPieceId: correctSnapshot.id,
+          correctPieceLabel: correctSnapshot.label,
+          chosenPieceId: chosenSnapshot.id,
+          chosenPieceLabel: chosenSnapshot.label,
+        });
+        void loadLeaderboard();
       }
 
       const updatedVirtual = virtualPieces.map((piece) =>
@@ -398,7 +462,7 @@ export default function IchuckyPage() {
         const regenerated = buildNewGame(pieceCount);
         if (!regenerated) {
           setStatus("finished");
-          setMessage("Не вдалося згенерувати завдання, Restart");
+          setMessage("Не вдалося згенерувати завдання, перезапустіть");
           setMessageTone("error");
           return;
         }
@@ -436,6 +500,17 @@ export default function IchuckyPage() {
           virtualSnapshotBefore: snapshot,
         },
       ]);
+      void logAttempt({
+        isCorrect: false,
+        streakAfter: 0,
+        piecesCount: pieceCount,
+        targetSquare,
+        correctPieceId: correctSnapshot.id,
+        correctPieceLabel: correctSnapshot.label,
+        chosenPieceId: chosenSnapshot.id,
+        chosenPieceLabel: chosenSnapshot.label,
+      });
+      void loadLeaderboard();
       setLastMistake({
         target: targetSquare,
         correctPieceId: correctSnapshot.id,
@@ -504,6 +579,29 @@ export default function IchuckyPage() {
                 <div>Спроби: {attempts}</div>
                 <div>Правильні: {correct}</div>
                 <div>Серія: {streak}</div>
+              </div>
+              <div className="text-sm font-semibold text-[hsl(var(--foreground))]">
+                Рекорд: {leaderboard?.me.bestStreak ?? 0}
+              </div>
+              <div>
+                <div className="text-sm font-semibold text-[hsl(var(--foreground))]">Топ 10</div>
+                {leaderboardLoading && (
+                  <div className="text-sm text-[hsl(var(--muted-foreground))]">Завантаження...</div>
+                )}
+                {!leaderboardLoading && leaderboardError && (
+                  <div className="text-sm text-[hsl(var(--destructive))]">
+                    Не вдалося завантажити рейтинг
+                  </div>
+                )}
+                {!leaderboardLoading && !leaderboardError && (
+                  <ol className="mt-2 space-y-1 text-sm text-[hsl(var(--foreground))]">
+                    {(leaderboard?.top ?? []).map((row, index) => (
+                      <li key={row.userId}>
+                        {index + 1}. {row.label} — {row.bestStreak}
+                      </li>
+                    ))}
+                  </ol>
+                )}
               </div>
               <div className="flex items-center gap-2">
                 <span className="text-sm font-medium text-[hsl(var(--foreground))]">
