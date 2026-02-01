@@ -59,7 +59,7 @@ export async function GET(request: NextRequest) {
       },
     });
 
-    let attempts7d = logs.length;
+    const attempts7d = logs.length;
     let correct7d = 0;
     const timeValues: number[] = [];
 
