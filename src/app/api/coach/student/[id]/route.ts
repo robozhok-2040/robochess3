@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/utils/supabase/server";
 import { parseStudentId, getActorCoach, normalizePlatform } from "@/lib/server/devBypass";
-import { getCoachUserId } from "@/lib/server/coachAuth";
 import { prisma } from "@/lib/prisma";
 
 export async function DELETE(
@@ -40,19 +39,8 @@ export async function DELETE(
       actorRole = actor.actorRole;
       console.log(`[DELETE student] Actor resolved: id=${actorCoachId}, role=${actorRole}, mode=${actor.mode}, studentId=${studentId}, platform=${platform}`);
     } catch (err: any) {
-      const fallbackCoachId = await getCoachUserId(request);
-      if (!fallbackCoachId) {
-        console.error(`[DELETE student] Actor resolution failed:`, err);
-        const errorResponse: any = { error: "UNAUTHORIZED" };
-        if (process.env.NODE_ENV !== "production") {
-          errorResponse.message = "Set DEV_COACH_ID in .env.local for dev.";
-        }
-        return NextResponse.json(errorResponse, { status: err?.status || 401 });
-      }
-
-      actorCoachId = fallbackCoachId;
-      actorRole = 'coach';
-      console.log(`[DELETE student] Actor resolved via dev fallback: id=${actorCoachId}, role=${actorRole}, studentId=${studentId}, platform=${platform}`);
+      console.error(`[DELETE student] Actor resolution failed:`, err);
+      return NextResponse.json({ error: err.error || "Unauthorized" }, { status: err.status || 401 });
     }
 
     // Verify student exists and check ownership

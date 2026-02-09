@@ -113,5 +113,3 @@ export async function fetchLichessPuzzleCounts(
   };
 }
 
-
-

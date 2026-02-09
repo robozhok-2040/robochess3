@@ -1211,8 +1211,8 @@ return {
     setUpdateStatsStatus("Updating...");
     
     try {
-      // Call coach-authorized sync endpoint (replaces direct cron endpoint call)
-      const response = await fetch("/api/coach/sync-stats-v2?limit=100&offset=0", withDevCoachHeaders());
+      // Call v2 stats endpoint (replaces legacy /api/cron/update-stats)
+      const response = await fetch("/api/cron/update-stats-v2?limit=100&offset=0");
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({ error: "Unknown error" }));
@@ -1951,7 +1951,7 @@ return {
                         aria-label="Hide student"
                       >
                         <span className="hidden lg:inline">Hide</span>
-                        <span className="lg:hidden">View</span>
+                        <span className="lg:hidden">👁</span>
                       </Button>
 
                       {/* Delete Button (visible) */}
@@ -1967,7 +1967,7 @@ return {
                         title="Delete student"
                         aria-label="Delete student"
                       >
-                        Delete
+                        🗑
                       </Button>
                     </div>
                   </td>
