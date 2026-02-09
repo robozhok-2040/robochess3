@@ -229,5 +229,3 @@
 - `stats_snapshots` uses `user_id`
 - Both refer to the same `profiles.id` value, just different column names
 
-
-

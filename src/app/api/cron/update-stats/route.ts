@@ -1,62 +1,8 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
+
 import { prisma } from "@/lib/prisma";
 
 export const dynamic = 'force-dynamic';
-
-/**
- * Auth guard for cron endpoints
- * Returns null if authorized, or NextResponse with error if not
- */
-function assertCronAuth(request: NextRequest): NextResponse | null {
-  const isProduction = process.env.NODE_ENV === 'production';
-  const cronSecret = process.env.CRON_SECRET;
-
-  // In production, CRON_SECRET must be configured
-  if (isProduction && !cronSecret) {
-    return NextResponse.json(
-      { ok: false, error: 'CRON_SECRET is not configured' },
-      { status: 500 }
-    );
-  }
-
-  // In development, allow running without secret (developer convenience)
-  if (!isProduction && !cronSecret) {
-    return null; // No auth required in dev if no secret is set
-  }
-
-  // Extract token from multiple sources
-  const authHeader = request.headers.get('authorization');
-  let token: string | null = null;
-
-  if (authHeader?.startsWith('Bearer ')) {
-    token = authHeader.substring(7).trim();
-  } else {
-    token = request.headers.get('x-cron-secret');
-  }
-
-  // Fallback to query param
-  if (!token) {
-    token = request.nextUrl.searchParams.get('secret');
-  }
-
-  // If secret is configured but no token provided, deny (fail closed)
-  if (cronSecret && !token) {
-    return NextResponse.json(
-      { ok: false, error: 'Unauthorized' },
-      { status: 401 }
-    );
-  }
-
-  // If secret is configured and token provided, validate it
-  if (cronSecret && token && token !== cronSecret) {
-    return NextResponse.json(
-      { ok: false, error: 'Unauthorized' },
-      { status: 401 }
-    );
-  }
-
-  return null; // Authorized
-}
 
 /**
  * Helper: Count Lichess games from NDJSON export for a time window
@@ -240,13 +186,7 @@ async function countChessComGamesWindow(
   return { games24h, games7d };
 }
 
-export async function GET(request: NextRequest) {
-  // Auth guard - must run BEFORE any heavy operations
-  const authError = assertCronAuth(request);
-  if (authError) {
-    return authError;
-  }
-
+export async function GET() {
   try {
     const students = await prisma.profiles.findMany({
       where: { role: "student" },

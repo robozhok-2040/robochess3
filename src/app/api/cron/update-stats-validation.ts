@@ -45,5 +45,3 @@ export async function validateSnapshotHas7dFields(userId: string): Promise<boole
 }
 
 
-
-

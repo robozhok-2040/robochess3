@@ -181,5 +181,3 @@ if (!isValid) {
 **UI displays**: `0` (no special "—" needed, as 0 is correct and clear)
 
 
-
-
