@@ -12,8 +12,8 @@ export default async function TestPage() {
           <h3>Error Message:</h3>
           <code style={{ fontSize: '1.2em' }}>{error.message}</code>
           <p style={{ marginTop: '15px' }}>
-            ℹ️ If the message says <strong>relation "public.profiles" does not exist</strong> — CONGRATS! 
-            It means the connection is PERFECT, we just haven't created the table yet.
+            ℹ️ If the message says <strong>relation &quot;public.profiles&quot; does not exist</strong> — CONGRATS! 
+            It means the connection is PERFECT, we just haven&apos;t created the table yet.
           </p>
         </div>
       ) : (

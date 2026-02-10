@@ -120,7 +120,11 @@ export function extractHostname(request: { headers: Headers; url: string }): str
  * 3. Query param: "devCoachId"
  * 4. Fallback: process.env.DEV_COACH_ID
  */
-export function getDevCoachIdFromRequest(request: { headers: Headers; url: string; cookies?: any }): string | null {
+type CookieAccessor = { get: (name: string) => { value?: string } | undefined };
+type CoachRequest = { headers: Headers; url: string; cookies?: CookieAccessor };
+type SupabaseAuthClient = { auth: { getUser: () => Promise<{ data?: { user?: { id?: string | null } } }> } };
+
+export function getDevCoachIdFromRequest(request: CoachRequest): string | null {
   // 1. Header
   const headerId = request.headers.get('x-dev-coach-id');
   if (headerId) return headerId;
@@ -150,9 +154,9 @@ export function getDevCoachIdFromRequest(request: { headers: Headers; url: strin
  * Uses shared coachContext utilities for consistency
  */
 export async function getActorCoach(
-  request: { headers: Headers; url: string; cookies?: any },
-  supabase: any,
-  prisma?: any
+  request: CoachRequest,
+  supabase: SupabaseAuthClient,
+  prisma?: unknown
 ): Promise<{ actorCoachId: string; actorRole: 'coach' | 'admin'; mode: 'auth' | 'dev-header' | 'dev-env' }> {
   // Use shared coachContext for consistent resolution
   const { resolveCoachId } = await import("@/lib/server/coachContext");
@@ -169,7 +173,7 @@ export async function getActorCoach(
       actorRole: result.role,
       mode: result.mode,
     };
-  } catch (err: any) {
+  } catch (err: unknown) {
     // Re-throw with same format
     throw err;
   }
@@ -180,9 +184,9 @@ export async function getActorCoach(
  * @deprecated Use getActorCoach instead
  */
 export async function resolveCoachActor(
-  request: { headers: Headers; url: string; cookies?: any },
-  supabase: any,
-  prisma?: any
+  request: CoachRequest,
+  supabase: SupabaseAuthClient,
+  prisma?: unknown
 ): Promise<{ actorId: string; actorRole: 'coach' | 'admin' }> {
   const result = await getActorCoach(request, supabase, prisma);
   return { actorId: result.actorCoachId, actorRole: result.actorRole };

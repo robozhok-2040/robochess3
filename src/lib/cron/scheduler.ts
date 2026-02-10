@@ -110,13 +110,14 @@ export function startScheduler(): void {
 
   // Also check globalThis as additional safeguard
   const globalKey = '__robochess_scheduler_started__';
-  if ((globalThis as any)[globalKey]) {
+  const globalState = globalThis as Record<string, unknown>;
+  if (globalState[globalKey]) {
     console.log('[SCHEDULER] Scheduler already started (global check) - skipping');
     return;
   }
 
   schedulerStarted = true;
-  (globalThis as any)[globalKey] = true;
+  globalState[globalKey] = true;
 
   console.log('[SCHEDULER] Starting internal stats v2 scheduler (every 6 hours)');
 
@@ -145,7 +146,8 @@ export function stopScheduler(): void {
     clearInterval(schedulerIntervalId);
     schedulerIntervalId = null;
     schedulerStarted = false;
-    delete (globalThis as any).__robochess_scheduler_started__;
+    const globalState = globalThis as Record<string, unknown>;
+    delete (globalState as Record<string, unknown>).__robochess_scheduler_started__;
     console.log('[SCHEDULER] Scheduler stopped');
   }
 }

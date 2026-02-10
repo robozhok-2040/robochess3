@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { Prisma } from "@prisma/client";
 import { getStudentUserId } from "@/lib/server/studentAuth";
 
 export async function GET(request: NextRequest) {
@@ -24,7 +25,7 @@ export async function GET(request: NextRequest) {
         details: {
           path: ["cycleId"],
           equals: cycleId,
-        } as any,
+        } as Prisma.JsonFilter,
       },
       orderBy: { created_at: "desc" },
       select: { details: true },

@@ -17,8 +17,9 @@ async function auditDatabase() {
     console.log('📊 Most Recent Snapshot Record:');
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 
+    const snapshotRecord = latestSnapshot as Record<string, unknown>;
     // Get all keys from the snapshot object
-    const keys = Object.keys(latestSnapshot);
+    const keys = Object.keys(snapshotRecord);
     
     // Print all columns with their values
     console.log('Column Name'.padEnd(40) + '│ Value'.padEnd(30) + '│ Type');
@@ -27,7 +28,7 @@ async function auditDatabase() {
     for (const key of keys) {
       if (key === 'profiles') continue; // Skip relation field
       
-      const value = (latestSnapshot as any)[key];
+      const value = snapshotRecord[key];
       const valueStr = value === null ? '(NULL)' : value === undefined ? '(UNDEFINED)' : String(value);
       const valueType = value === null ? 'null' : typeof value;
       
@@ -46,7 +47,7 @@ async function auditDatabase() {
     for (const key of keys) {
       if (key === 'profiles' || key === 'id' || key === 'user_id' || key === 'captured_at') continue;
       
-      const value = (latestSnapshot as any)[key];
+      const value = snapshotRecord[key];
       
       if (value === null || value === undefined) {
         nullColumns.push(key);
@@ -59,7 +60,7 @@ async function auditDatabase() {
 
     console.log(`✅ Populated columns (${populatedColumns.length}):`);
     populatedColumns.forEach(col => {
-      const value = (latestSnapshot as any)[col];
+      const value = snapshotRecord[col];
       console.log(`   - ${col}: ${value}`);
     });
 
@@ -78,13 +79,13 @@ async function auditDatabase() {
     console.log('🎯 Field Analysis for Rename/Delete Operations:\n');
 
     const fieldsToCheck = {
-      'games_played_24h': (latestSnapshot as any).games_played_24h,
-      'games_played_7d': (latestSnapshot as any).games_played_7d,
-      'games_played_blitz_24h': (latestSnapshot as any).games_played_blitz_24h,
-      'games_played_blitz_7d': (latestSnapshot as any).games_played_blitz_7d,
-      'total_games_rapid_lifetime': (latestSnapshot as any).total_games_rapid_lifetime,
-      'total_games_blitz_lifetime': (latestSnapshot as any).total_games_blitz_lifetime,
-      'games_played_total': (latestSnapshot as any).games_played_total,
+      'games_played_24h': snapshotRecord.games_played_24h,
+      'games_played_7d': snapshotRecord.games_played_7d,
+      'games_played_blitz_24h': snapshotRecord.games_played_blitz_24h,
+      'games_played_blitz_7d': snapshotRecord.games_played_blitz_7d,
+      'total_games_rapid_lifetime': snapshotRecord.total_games_rapid_lifetime,
+      'total_games_blitz_lifetime': snapshotRecord.total_games_blitz_lifetime,
+      'games_played_total': snapshotRecord.games_played_total,
     };
 
     for (const [fieldName, value] of Object.entries(fieldsToCheck)) {

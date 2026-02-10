@@ -4,7 +4,14 @@ export async function getCoachUserId(request: Request): Promise<string | null> {
   try {
     const supabase = await createClient();
     const { getActorCoach } = await import("@/lib/server/devBypass");
-    const actor = await getActorCoach(request as any, supabase);
+    const actor = await getActorCoach(
+      request as unknown as {
+        headers: Headers;
+        url: string;
+        cookies?: { get: (name: string) => { value?: string } | undefined };
+      },
+      supabase
+    );
     if (actor?.actorCoachId) {
       return actor.actorCoachId;
     }

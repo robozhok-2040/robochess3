@@ -84,6 +84,7 @@ export function SidebarNav({ groups, sectionTitle }: SidebarNavProps) {
   useEffect(() => {
     const saved = localStorage.getItem("sidebar-collapsed");
     if (saved !== null) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setIsCollapsed(saved === "true");
     }
     // If no saved value, keep default (collapsed = true)

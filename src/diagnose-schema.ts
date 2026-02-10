@@ -28,10 +28,11 @@ async function diagnoseSchema() {
     console.log('Column Name'.padEnd(40) + '│ Value'.padEnd(30) + '│ Type');
     console.log('─'.repeat(40) + '┼' + '─'.repeat(30) + '┼' + '─'.repeat(20));
 
-    const keys = Object.keys(sample).filter(k => k !== 'profiles');
+    const sampleRecord = sample as Record<string, unknown>;
+    const keys = Object.keys(sampleRecord).filter(k => k !== 'profiles');
     
     for (const key of keys) {
-      const value = (sample as any)[key];
+      const value = sampleRecord[key];
       const valueStr = value === null ? '(NULL)' : value === undefined ? '(UNDEFINED)' : String(value);
       const valueType = value === null ? 'null' : typeof value;
       
@@ -56,14 +57,15 @@ async function diagnoseSchema() {
 
     // List all column names from the actual database structure
     console.log('📋 Actual Database Columns (from Prisma introspection):\n');
-    const allKeys = Object.keys(sample).filter(k => k !== 'profiles');
+    const allKeys = Object.keys(sampleRecord).filter(k => k !== 'profiles');
     allKeys.forEach(key => {
       console.log(`   - ${key}`);
     });
 
-  } catch (error: any) {
-    console.error('❌ Error during diagnosis:', error.message);
-    if (error.message.includes('Unknown column')) {
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error('❌ Error during diagnosis:', message);
+    if (message.includes('Unknown column')) {
       console.error('\n⚠️  This suggests the database schema does not match Prisma schema!');
     }
   } finally {

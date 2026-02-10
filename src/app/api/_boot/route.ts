@@ -11,7 +11,7 @@ export const runtime = 'nodejs';
 export async function GET() {
   try {
     // Check if scheduler is already running using globalThis guard
-    const g = globalThis as any;
+    const g = globalThis as Record<string, unknown>;
     const globalKey = '__rcSchedulerStarted';
     if (g[globalKey]) {
       return NextResponse.json({

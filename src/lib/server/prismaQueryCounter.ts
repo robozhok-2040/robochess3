@@ -13,7 +13,7 @@ export function registerPrismaQueryCounter(): void {
     return; // Already registered
   }
 
-  prisma.$use(async (params: Prisma.MiddlewareParams, next: (params: Prisma.MiddlewareParams) => Promise<any>) => {
+  prisma.$use(async (params: Prisma.MiddlewareParams, next: (params: Prisma.MiddlewareParams) => Promise<unknown>) => {
     // Increment query count for the current request context
     bumpPrismaQueryCount();
     return next(params);

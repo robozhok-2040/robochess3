@@ -39,15 +39,16 @@ export async function DELETE(
       actorCoachId = actor.actorCoachId;
       actorRole = actor.actorRole;
       console.log(`[DELETE student] Actor resolved: id=${actorCoachId}, role=${actorRole}, mode=${actor.mode}, studentId=${studentId}, platform=${platform}`);
-    } catch (err: any) {
+    } catch (err: unknown) {
       const fallbackCoachId = await getCoachUserId(request);
       if (!fallbackCoachId) {
         console.error(`[DELETE student] Actor resolution failed:`, err);
-        const errorResponse: any = { error: "UNAUTHORIZED" };
+        const errorResponse: Record<string, unknown> = { error: "UNAUTHORIZED" };
         if (process.env.NODE_ENV !== "production") {
           errorResponse.message = "Set DEV_COACH_ID in .env.local for dev.";
         }
-        return NextResponse.json(errorResponse, { status: err?.status || 401 });
+        const errStatus = (err as { status?: number })?.status;
+        return NextResponse.json(errorResponse, { status: errStatus || 401 });
       }
 
       actorCoachId = fallbackCoachId;
@@ -126,12 +127,12 @@ export async function DELETE(
       removedStudentId: studentId, 
       platform 
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("Error removing student:", error);
     
     return NextResponse.json({ 
       error: "Internal Server Error",
-      details: error.message 
+      details: error instanceof Error ? error.message : String(error),
     }, { status: 500 });
   }
 }

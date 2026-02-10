@@ -15,7 +15,43 @@ export const revalidate = 0; // Disable cache to show fresh DB data immediately
 type CachePayload = { body: string; status: number };
 type CacheEntry = { expiresAt: number; promise: Promise<CachePayload> };
 
-const g = globalThis as any;
+type DebuggableArray = unknown[] & { debug?: Record<string, unknown> };
+type V2StatRow = {
+  student_id: string;
+  platform: string;
+  rapid_24h: number | null;
+  rapid_7d: number | null;
+  blitz_24h: number | null;
+  blitz_7d: number | null;
+  puzzle_total: number | null;
+  puzzle_24h: number | null;
+  puzzle_7d: number | null;
+  rapid_rating_delta_24h: number | null;
+  rapid_rating_delta_7d: number | null;
+  blitz_rating_delta_24h: number | null;
+  blitz_rating_delta_7d: number | null;
+  computed_at: Date | null;
+  last_update_ok: boolean | null;
+  last_update_error_code: string | null;
+  last_update_attempt_at: Date | null;
+};
+type SnapshotRow = {
+  user_id: string;
+  source: string;
+  rapid_rating: number | null;
+  blitz_rating: number | null;
+  puzzle_rating: number | null;
+  rapid_24h: number | null;
+  rapid_7d: number | null;
+  blitz_24h: number | null;
+  blitz_7d: number | null;
+  puzzle_total: number | null;
+  puzzle_24h: number | null;
+  puzzle_7d: number | null;
+  captured_at: Date;
+};
+
+const g = globalThis as Record<string, unknown>;
 const CACHE_KEY = '__rcCoachStudentsCache';
 if (!g[CACHE_KEY]) g[CACHE_KEY] = new Map<string, CacheEntry>();
 const cache: Map<string, CacheEntry> = g[CACHE_KEY];
@@ -31,11 +67,10 @@ export async function GET(request: NextRequest) {
 
   // Pipeline function that performs the actual work
   // Returns a plain object payload, not NextResponse
-  async function executePipeline(): Promise<{ data: any; status: number }> {
+  async function executePipeline(): Promise<{ data: unknown; status: number }> {
     return await runWithRequestContext(requestId, async () => {
       const context = getRequestContext()!;
       let responseStatus = 200;
-      let responseData: any = null;
       
       // Stage-level timing breakdown
       const timings: Record<string, number> = {};
@@ -62,14 +97,15 @@ export async function GET(request: NextRequest) {
           });
           actorCoachId = actorResult.actorCoachId;
           actorRole = actorResult.actorRole;
-        } catch (err: any) {
+        } catch (err: unknown) {
           const fallbackCoachId = await getCoachUserId(request);
           if (!fallbackCoachId) {
             // Log instrumentation for auth errors
             const durationMs = Date.now() - context.startedAt;
-            console.log(`[COACH_STUDENTS] id=${context.requestId} status=${err?.status || 401} ms=${durationMs} sql=${context.prismaQueryCount}`);
+            const errStatus = (err as { status?: number })?.status;
+            console.log(`[COACH_STUDENTS] id=${context.requestId} status=${errStatus || 401} ms=${durationMs} sql=${context.prismaQueryCount}`);
 
-            const errorResponse: any = { error: "UNAUTHORIZED" };
+            const errorResponse: Record<string, unknown> = { error: "UNAUTHORIZED" };
             if (process.env.NODE_ENV !== "production") {
               errorResponse.message = "Set DEV_COACH_ID in .env.local for dev.";
             }
@@ -81,7 +117,7 @@ export async function GET(request: NextRequest) {
               };
             }
 
-            return { data: errorResponse, status: err?.status || 401 };
+            return { data: errorResponse, status: errStatus || 401 };
           }
 
           actorCoachId = fallbackCoachId;
@@ -89,7 +125,7 @@ export async function GET(request: NextRequest) {
         }
 
     // Build where clause: filter by ownership for coaches
-    const whereClause: any = { role: "student" };
+    const whereClause: Record<string, unknown> = { role: "student" };
     if (actorRole === 'coach') {
       // Coach can only see students they added
       whereClause.added_by_coach_id = actorCoachId;
@@ -117,7 +153,7 @@ export async function GET(request: NextRequest) {
           const durationMs = Date.now() - context.startedAt;
           console.log(`[COACH_STUDENTS] id=${context.requestId} status=200 ms=${durationMs} sql=${context.prismaQueryCount}`);
           
-          const emptyResponse: any = [];
+          const emptyResponse: DebuggableArray = [];
           if (debug) {
             const emptyTimings: Record<string, number> = {};
             const emptyCounts: Record<string, number> = { students: 0 };
@@ -162,11 +198,14 @@ export async function GET(request: NextRequest) {
         }
 
         // Map: key = `${student_id}:${platform}` -> stat
-        const v2ByKey = new Map<string, any>();
+        const v2ByKey = new Map<string, V2StatRow>();
         // Map: studentId -> platform -> latest snapshot (for ratings)
-        const v2SnapshotMap = new Map<string, Map<string, any>>();
+        const v2SnapshotMap = new Map<
+          string,
+          Map<string, Pick<SnapshotRow, "rapid_rating" | "blitz_rating" | "puzzle_rating">>
+        >();
         // Map: user_id -> latest legacy snapshot
-        const legacySnapshotMap = new Map<string, any>();
+        const legacySnapshotMap = new Map<string, SnapshotRow>();
 
         // Query 3 & 4: Fetch stats and snapshots
         if (studentIds.length > 0 && v2Platforms.size > 0) {
@@ -199,25 +238,7 @@ export async function GET(request: NextRequest) {
               ORDER BY student_id, platform, computed_at DESC
             `;
 
-            return await prisma.$queryRaw<Array<{
-              student_id: string;
-              platform: string;
-              rapid_24h: number | null;
-              rapid_7d: number | null;
-              blitz_24h: number | null;
-              blitz_7d: number | null;
-              puzzle_total: number | null;
-              puzzle_24h: number | null;
-              puzzle_7d: number | null;
-              rapid_rating_delta_24h: number | null;
-              rapid_rating_delta_7d: number | null;
-              blitz_rating_delta_24h: number | null;
-              blitz_rating_delta_7d: number | null;
-              computed_at: Date | null;
-              last_update_ok: boolean | null;
-              last_update_error_code: string | null;
-              last_update_attempt_at: Date | null;
-            }>>(v2StatsQuery);
+            return await prisma.$queryRaw<Array<V2StatRow>>(v2StatsQuery);
           });
           
           counts.v2Stats = v2Stats.length;
@@ -250,21 +271,7 @@ export async function GET(request: NextRequest) {
               ORDER BY user_id, source, captured_at DESC
             `;
 
-            return await prisma.$queryRaw<Array<{
-              user_id: string;
-              source: string;
-              rapid_rating: number | null;
-              blitz_rating: number | null;
-              puzzle_rating: number | null;
-              rapid_24h: number | null;
-              rapid_7d: number | null;
-              blitz_24h: number | null;
-              blitz_7d: number | null;
-              puzzle_total: number | null;
-              puzzle_24h: number | null;
-              puzzle_7d: number | null;
-              captured_at: Date;
-            }>>(allSourcesQuery);
+            return await prisma.$queryRaw<Array<SnapshotRow>>(allSourcesQuery);
           });
           
           counts.allSnapshots = allSnapshots.length;
@@ -314,21 +321,7 @@ export async function GET(request: NextRequest) {
               ORDER BY user_id, source, captured_at DESC
             `;
 
-            return await prisma.$queryRaw<Array<{
-              user_id: string;
-              source: string;
-              rapid_rating: number | null;
-              blitz_rating: number | null;
-              puzzle_rating: number | null;
-              rapid_24h: number | null;
-              rapid_7d: number | null;
-              blitz_24h: number | null;
-              blitz_7d: number | null;
-              puzzle_total: number | null;
-              puzzle_24h: number | null;
-              puzzle_7d: number | null;
-              captured_at: Date;
-            }>>(legacyQuery);
+            return await prisma.$queryRaw<Array<SnapshotRow>>(legacyQuery);
           });
           
           counts.legacySnapshots = legacySnapshots.length;
@@ -497,7 +490,7 @@ export async function GET(request: NextRequest) {
           blitzRating = latestStats?.blitz_rating ?? null;
         }
 
-        const result: any = {
+        const result: Record<string, unknown> = {
           id: `${student.id}:${platform}`, // Unique composite key: student_id:platform
           student_id: student.id, // UUID of student profile (for delete/other operations)
           nickname: student.username || student.full_name || "Unnamed",
@@ -598,7 +591,7 @@ export async function GET(request: NextRequest) {
         }
 
         // Build error response with optional debug field
-        const errorResponse: any = { error: "Internal Server Error" };
+        const errorResponse: Record<string, unknown> = { error: "Internal Server Error" };
         if (debug) {
           errorResponse.debug = {
             requestId: context.requestId,
@@ -659,7 +652,7 @@ export async function GET(request: NextRequest) {
       const { getActorCoach } = await import("@/lib/server/devBypass");
       const actor = await getActorCoach(request, supabase);
       cacheKey = `${actor.actorCoachId}:${actor.actorRole}`;
-    } catch (err: any) {
+    } catch (err: unknown) {
       const fallbackCoachId = await getCoachUserId(request);
       if (!fallbackCoachId) {
         // Auth failed, execute pipeline to return proper error

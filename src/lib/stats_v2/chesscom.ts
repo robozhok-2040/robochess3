@@ -3,12 +3,12 @@ import { Perf, DiagnosticInfo } from './types';
 interface ChessComGame {
   time_class?: string;
   end_time?: number;
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 interface ChessComArchive {
   games?: ChessComGame[];
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 /**

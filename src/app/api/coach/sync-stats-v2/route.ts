@@ -576,7 +576,7 @@ async function handleRequest(request: NextRequest) {
 
     // Load platform_connections where platform IN ('lichess','chesscom')
     // Filter by coach ownership: coaches can only sync their own students
-    const whereClause: any = {
+    const whereClause: Record<string, unknown> = {
       platform: {
         in: ['lichess', 'chesscom'],
       },

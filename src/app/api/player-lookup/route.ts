@@ -54,7 +54,7 @@ type PlayerRow = {
 
 type PlayerLookupResponse = {
   rows: PlayerRow[];
-  debug?: any;
+  debug?: unknown;
 };
 
 // --- HELPERS ---
@@ -372,10 +372,11 @@ export async function GET(request: NextRequest) {
       const actor = await getActorCoach(request, supabase);
       actorCoachId = actor.actorCoachId;
       actorRole = actor.actorRole;
-    } catch (err: any) {
+    } catch (err: unknown) {
+      const errPayload = err as { error?: string; status?: number };
       return NextResponse.json(
-        { error: err.error || "Unauthorized" },
-        { status: err.status || 401 }
+        { error: errPayload.error || "Unauthorized" },
+        { status: errPayload.status || 401 }
       );
     }
 
@@ -459,7 +460,7 @@ export async function GET(request: NextRequest) {
 
     // Track if any row was already_linked (for idempotent response)
     let hasAlreadyLinked = false;
-    let alreadyLinkedStudents: Array<{ id: string; nickname: string; platform: string }> = [];
+    const alreadyLinkedStudents: Array<{ id: string; nickname: string; platform: string }> = [];
 
     for (const row of rows) {
       // Normalize username before querying (case-insensitive for Lichess and Chess.com)
@@ -614,9 +615,10 @@ export async function GET(request: NextRequest) {
               platform_username: normalizedHandle,
               last_synced_at: nowIso,
             });
-          } catch (insertErr: any) {
+          } catch (insertErr: unknown) {
             // Handle unique constraint violation (Prisma P2002 equivalent in Supabase)
-            if (insertErr?.code === '23505' || insertErr?.message?.includes('unique') || insertErr?.message?.includes('duplicate')) {
+            const insertError = insertErr as { code?: string; message?: string };
+            if (insertError.code === '23505' || insertError.message?.includes('unique') || insertError.message?.includes('duplicate')) {
               // Race condition: connection was created between check and insert
               // Re-query and treat as idempotent success
               const { data: raceExisting } = await supabase

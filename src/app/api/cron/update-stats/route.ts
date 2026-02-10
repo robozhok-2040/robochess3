@@ -644,7 +644,7 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    const responseData: any = { summary: "Updated", details: updates };
+    const responseData: Record<string, unknown> = { summary: "Updated", details: updates };
     // Include diagnostics if collected (will be null for non-test users)
     responseData.lichess_debug = lichessDebug;
 

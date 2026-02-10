@@ -41,7 +41,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "BAD_REQUEST" }, { status: 400 });
     }
 
-    const where: any = {
+    const where: Record<string, unknown> = {
       elo_rating: {
         not: null,
         gte: rating - delta,

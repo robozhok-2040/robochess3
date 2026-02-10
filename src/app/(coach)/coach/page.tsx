@@ -991,7 +991,7 @@ return {
 
           // Load saved selection from localStorage
           const savedCoachId = localStorage.getItem('robochess_dev_coach_id');
-          if (savedCoachId && coaches.some((c: any) => c.id === savedCoachId)) {
+          if (savedCoachId && coaches.some((c: { id: string }) => c.id === savedCoachId)) {
             setDevCoachId(savedCoachId);
           } else if (coaches.length === 1) {
             // Auto-select if only one coach
@@ -1051,10 +1051,10 @@ return {
           return;
         }
         
-        const apiRows = data.rows || [];
+        const apiRows = Array.isArray(data.rows) ? (data.rows as ApiStudent[]) : [];
         
         // Map API rows to Student type, initializing delta fields to null (no history yet)
-        const newRows: Student[] = apiRows.map((row: any) => ({
+        const newRows: Student[] = apiRows.map((row) => ({
           ...row,
           puzzleDelta3d: null,
           puzzleDelta7d: null,
@@ -1308,8 +1308,8 @@ return {
     // No special case for "index" - just sort normally
 
     sorted.sort((a, b) => {
-      let aVal: any;
-      let bVal: any;
+      let aVal: string | number | null | undefined;
+      let bVal: string | number | null | undefined;
       let isString = false;
 
       switch (sortKey) {
